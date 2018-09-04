@@ -5,6 +5,7 @@ import {Table} from "../schema-builder/table/Table";
 import {EntityManager} from "../entity-manager/EntityManager";
 import {TableColumn} from "../schema-builder/table/TableColumn";
 import {Broadcaster} from "../subscriber/Broadcaster";
+import { QueryBuilder } from "../query-builder/QueryBuilder";
 
 export abstract class BaseQueryRunner {
 
@@ -83,6 +84,10 @@ export abstract class BaseQueryRunner {
      * Executes a given SQL query.
      */
     abstract query(query: string, parameters?: any[]): Promise<any>;
+    queryByBuilder<Entity>(qb: QueryBuilder<Entity>): Promise<any> {
+        const [sql, parameters] = qb.getQueryAndParameters();
+        return this.query(sql, parameters);
+    }
 
     // -------------------------------------------------------------------------
     // Protected Abstract Methods

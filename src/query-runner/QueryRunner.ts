@@ -11,6 +11,7 @@ import {TableUnique} from "../schema-builder/table/TableUnique";
 import {Broadcaster} from "../subscriber/Broadcaster";
 import {TableCheck} from "../schema-builder/table/TableCheck";
 import {IsolationLevel} from "../driver/types/IsolationLevel";
+import {QueryBuilder} from "../query-builder/QueryBuilder";
 
 /**
  * Runs queries on a single database connection.
@@ -94,6 +95,11 @@ export interface QueryRunner {
      * Executes a given SQL query and returns raw database results.
      */
     query(query: string, parameters?: any[]): Promise<any>;
+
+    /**
+     * Executes a SQL correspond to given expression map and returns raw database results.
+     */
+    queryByBuilder<Entity>(qb: QueryBuilder<Entity>): Promise<any>;
 
     /**
      * Returns raw data stream.

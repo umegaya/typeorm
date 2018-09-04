@@ -78,9 +78,8 @@ export class UpdateQueryBuilder<Entity> extends QueryBuilder<Entity> implements 
             }
 
             // execute update query
-            const [sql, parameters] = this.getQueryAndParameters();
             const updateResult = new UpdateResult();
-            updateResult.raw = await queryRunner.query(sql, parameters);
+            updateResult.raw = await queryRunner.queryByBuilder<Entity>(this);
 
             // if we are updating entities and entity updation is enabled we must update some of entity columns (like version, update date, etc.)
             if (this.expressionMap.updateEntity === true &&
