@@ -1,4 +1,5 @@
 import {QueryRunner} from "../../query-runner/QueryRunner";
+import {QueryBuilder} from "../../query-builder/QueryBuilder";
 import {ObjectLiteral} from "../../common/ObjectLiteral";
 import {TableColumn} from "../../schema-builder/table/TableColumn";
 import {Table} from "../../schema-builder/table/Table";
@@ -402,6 +403,13 @@ export class MongoQueryRunner implements QueryRunner {
      */
     query(query: string, parameters?: any[]): Promise<any> {
         throw new Error(`Executing SQL query is not supported by MongoDB driver.`);
+    }
+
+    /**
+     * Executes a given SQL query builder.
+     */
+    queryByBuilder<Entity>(qb: QueryBuilder<Entity>): Promise<any> {
+        throw new Error(`Executing SQL query builder is not supported by MongoDB driver.`);
     }
 
     /**

@@ -237,8 +237,8 @@ export class SpannerDriver implements Driver {
                 name = dbname;
                 dbname = this.spanner.active;
             }
-            const database = await this.createDatabase(dbname);
-            const datas = database.getSchema();
+            // const database = await this.createDatabase(dbname);
+            // const datas = database.getSchema();
             return table;
         }));
     }
@@ -552,8 +552,10 @@ export class SpannerDriver implements Driver {
     /**
      * Creates generated map of values generated or returned by database after INSERT query.
      */
-    createGeneratedMap(metadata: EntityMetadata, insertResult: any) {
-        throw new Error(`NYI: spanner: createGeneratedMap`);
+    createGeneratedMap(metadata: EntityMetadata, insertResult: any): ObjectLiteral|undefined {
+        if (insertResult) {  
+            throw new Error(`NYI: spanner: createGeneratedMap`);
+        }
         return undefined;
     }
 

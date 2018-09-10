@@ -1,5 +1,4 @@
 import {QueryRunner} from "../../query-runner/QueryRunner";
-import {ObjectLiteral} from "../../common/ObjectLiteral";
 import {TransactionAlreadyStartedError} from "../../error/TransactionAlreadyStartedError";
 import {TransactionNotStartedError} from "../../error/TransactionNotStartedError";
 import {TableColumn} from "../../schema-builder/table/TableColumn";
@@ -545,15 +544,16 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      * - Enable or disable commit timestamps in value and primary key columns.
      */
     async changeColumn(tableOrName: Table|string, oldColumnOrName: TableColumn|string, newColumn: TableColumn): Promise<void> {
+        //TODO: implement above changes in comment
+        throw new Error(`NYI: spanner: changeColumn`);
+
+        /*
         const table = tableOrName instanceof Table ? tableOrName : await this.getCachedTable(tableOrName);
         let clonedTable = table.clone();
         const upQueries: string[] = [];
         const downQueries: string[] = [];
 
-        //TODO: implement above changes
-        throw new Error(`NYI: spanner: changeColumn`);
-
-        /*const oldColumn = oldColumnOrName instanceof TableColumn
+        const oldColumn = oldColumnOrName instanceof TableColumn
             ? oldColumnOrName
             : table.columns.find(column => column.name === oldColumnOrName);
         if (!oldColumn)
@@ -726,8 +726,8 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
             }
         } */
 
-        await this.executeQueries(upQueries, downQueries);
-        this.replaceCachedTable(table, clonedTable);
+        // await this.executeQueries(upQueries, downQueries);
+        // this.replaceCachedTable(table, clonedTable);
     }
 
     /**
@@ -1152,7 +1152,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
     update<Entity>(qb: QueryBuilder<Entity>): Promise<any> {
         return new Promise(async (ok, fail) => {
             try {
-                const vs = qb.expressionMap.valuesSet;
+                let vs = qb.expressionMap.valuesSet instanceof Array ? qb.expressionMap.valuesSet : [qb.expressionMap.valuesSet];
                 if (!vs || vs.length > 1) {
                     fail(new Error('only single value set can be used spanner update'));
                 }
