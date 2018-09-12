@@ -262,11 +262,11 @@ export class SpannerDriver implements Driver {
             const instance = client.instance(this.options.instanceId);
             this.spanner = {
                 client, instance, 
-                active: this.options.databaseId,
+                active: this.options.database,
                 databases: {}
             };
             return (async () => {
-                await this.createDatabase(this.options.databaseId);
+                await this.createDatabase(this.options.database);
             })();
         }
     }
