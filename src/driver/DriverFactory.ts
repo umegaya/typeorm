@@ -10,6 +10,7 @@ import {SqljsDriver} from "./sqljs/SqljsDriver";
 import {MysqlDriver} from "./mysql/MysqlDriver";
 import {PostgresDriver} from "./postgres/PostgresDriver";
 import {ExpoDriver} from "./expo/ExpoDriver";
+import {SpannerDriver} from "./spanner/SpannerDriver";
 import {Driver} from "./Driver";
 import {Connection} from "../connection/Connection";
 
@@ -48,6 +49,8 @@ export class DriverFactory {
                 return new MongoDriver(connection);
             case "expo":
                 return new ExpoDriver(connection);
+            case "spanner":
+            	return new SpannerDriver(connection);
             default:
                 throw new MissingDriverError(type);
         }

@@ -195,7 +195,7 @@ export class SpannerDriver implements Driver {
                     handle: database,
                     tables: {},
                 }
-                if (!this.spanner.active) { 
+                if (!this.spanner.active) {
                     this.spanner.active = name;
                 }
                 return database;
@@ -255,13 +255,14 @@ export class SpannerDriver implements Driver {
      */
     async connect(): Promise<void> {
         if (!this.spanner || !this.spanner.client) {
+			const Spanner = this.spannerLib.Spanner;
             // create objects
-            const client = this.spannerLib({
+            const client = new Spanner({
                 projectId: this.options.projectId,
             });
             const instance = client.instance(this.options.instanceId);
             this.spanner = {
-                client, instance, 
+                client, instance,
                 active: this.options.database,
                 databases: {}
             };
@@ -283,7 +284,7 @@ export class SpannerDriver implements Driver {
      */
     async disconnect(): Promise<void> {
         this.spanner = {
-            client: false, 
+            client: false,
             instance: false,
             active: undefined,
             databases: {},
@@ -553,7 +554,7 @@ export class SpannerDriver implements Driver {
      * Creates generated map of values generated or returned by database after INSERT query.
      */
     createGeneratedMap(metadata: EntityMetadata, insertResult: any): ObjectLiteral|undefined {
-        if (insertResult) {  
+        if (insertResult) {
             throw new Error(`NYI: spanner: createGeneratedMap`);
         }
         return undefined;
