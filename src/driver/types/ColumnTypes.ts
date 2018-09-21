@@ -6,6 +6,7 @@ export type PrimaryGeneratedColumnType = "int" // mysql, mssql, oracle, sqlite
     |"int2" // postgres, sqlite
     |"int4" // postgres
     |"int8" // postgres, sqlite
+    |"int64" // spanner
     |"integer" // postgres, oracle, sqlite
     |"tinyint" // mysql, mssql, sqlite
     |"smallint" // mysql, postgres, mssql, oracle, sqlite
@@ -32,6 +33,7 @@ export type WithPrecisionColumnType = "float" // mysql, mssql, oracle, sqlite
     |"numeric" // postgres, mssql, sqlite
     |"real" // mysql, postgres, mssql, oracle, sqlite
     |"double precision" // postgres, oracle, sqlite
+    |"float64" // spanner
     |"number" // oracle
     |"datetime" // mssql, mysql, sqlite
     |"datetime2" // mssql
@@ -59,8 +61,10 @@ export type WithLengthColumnType = "character varying" // postgres
     |"nvarchar2" // oracle, sqlite
     |"raw" // oracle
     |"binary" // mssql
-    |"varbinary"; // mssql
-
+    |"varbinary" // mssql
+    |"bytes" // spanner
+    |"string"; // spanner
+     
 export type WithWidthColumnType = "tinyint" // mysql
     |"smallint" // mysql
     |"mediumint" // mysql
@@ -88,10 +92,12 @@ export type SimpleColumnType =
     |"float8" // postgres
     |"smallmoney" // mssql
     |"money" // postgres, mssql
+    |"int64" // spanner
+    |"float64" // spanner
 
     // boolean types
     |"boolean" // postgres, sqlite
-    |"bool" // postgres
+    |"bool" // postgres, spanner
 
     // text/binary types
     |"tinyblob" // mysql
@@ -118,6 +124,7 @@ export type SimpleColumnType =
     |"timetz"
     |"timestamptz"
     |"timestamp with local time zone" // oracle
+    |"timestamp" // spanner
     |"smalldatetime" // mssql
     |"date" // mysql, postgres, mssql, oracle, sqlite
     |"interval year to month" // oracle

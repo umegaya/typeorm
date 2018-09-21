@@ -63,6 +63,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         if (!this.databaseConnection) {
             return (async () => {
                 this.databaseConnection = await this.driver.createDatabase();
+                return this.databaseConnection;
             })();
         }
         return Promise.resolve(this.databaseConnection);
@@ -139,9 +140,9 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
 
         // handle administrative queries.
         let m: RegExpMatchArray | null;
-        if ((m = query.match(/^\s+(CREATE|DROP|ALTER)\s+(.+)/))) {
+        if ((m = query.match(/^\s*(CREATE|DROP|ALTER)\s+(.+)/))) {
             return this.handleAdministrativeQuery(m[1], m);
-        } else if (!query.match(/^\s+SELECT\s+(.+)/)) {
+        } else if (!query.match(/^\s*SELECT\s+(.+)/)) {
             throw new Error(`the query cannot handle by this function: ${query}`);
         }
 
@@ -247,7 +248,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      */
     async hasTable(tableOrName: Table|string): Promise<boolean> {
         const table = await this.driver.loadTables(tableOrName);
-        return !!table;
+        return !!table[0];
     }
 
     /**
@@ -1215,36 +1216,38 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      * Handle administrative sqls as spanner API call
      */
     protected handleAdministrativeQuery(type: string, m: RegExpMatchArray): Promise<any>{
-        if (type == "CREATE") {
-            const p = m[2].split(/\s/);
-            if (p[0] == "DATABASE") {
-                let name = p[1];
-                if (p[1] == "IF") {
-                    if (p[2] != "NOT") {
-                        return Promise.reject(new Error(`invalid query ${m[0]}`));
-                    } else {
-                        name = p[4];
+        return this.connect().then(conn => {
+            if (type == "CREATE") {
+                const p = m[2].split(/\s/);
+                if (p[0] == "DATABASE") {
+                    let name = p[1];
+                    if (p[1] == "IF") {
+                        if (p[2] != "NOT") {
+                            return Promise.reject(new Error(`invalid query ${m[0]}`));
+                        } else {
+                            name = p[4];
+                        }
                     }
+                    return this.driver.createDatabase(name);
                 }
-                return this.driver.createDatabase(name);
-            }
-        } else if (type == "DROP") {
-            const p = m[2].split(/\s/);
-            if (p[0] == "DATABASE") {
-                let name = p[1];
-                if (p[1] == "IF") {
-                    if (p[2] != "EXISTS") {
-                        return Promise.reject(new Error(`invalid query ${m[0]}`));
-                    } else {
-                        name = p[3];
+            } else if (type == "DROP") {
+                const p = m[2].split(/\s/);
+                if (p[0] == "DATABASE") {
+                    let name = p[1];
+                    if (p[1] == "IF") {
+                        if (p[2] != "EXISTS") {
+                            return Promise.reject(new Error(`invalid query ${m[0]}`));
+                        } else {
+                            name = p[3];
+                        }
                     }
+                    return this.driver.dropDatabase(name);
                 }
-                return this.driver.dropDatabase(name);
             }
-        }
-        //others all updateSchema
-        return this.databaseConnection.updateSchema(m[0]).then((data: any[]) => {
-            return data[0].promise();
+            //others all updateSchema
+            return conn.updateSchema(m[0]).then((data: any[]) => {
+                return data[0].promise();
+            });
         });
     }
 
@@ -1269,7 +1272,6 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      * Loads all tables (with given names) from the database and creates a Table from them.
      */
     protected async loadTables(tableNames: string[]): Promise<Table[]> {
-
         // if no tables given then no need to proceed
         if (!tableNames || !tableNames.length)
             return [];
@@ -1327,7 +1329,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
                 if (index.isUnique)
                     indexType += "UNIQUE ";
                 if (index.isSpatial)
-                    throw new Error(`NYI: spanner: index.isSpatial`); //indexType += "SPATIAL ";
+                    indexType += "NULL_FILTERED ";
                 if (index.isFulltext)
                     throw new Error(`NYI: spanner: index.isFulltext`); //indexType += "FULLTEXT ";
 
@@ -1341,7 +1343,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
 
         if (table.primaryColumns.length > 0) {
             const columnNames = table.primaryColumns.map(column => `\`${column.name}\``).join(", ");
-            sql += `PRIMARY KEY (${columnNames})`;
+            sql += ` PRIMARY KEY (${columnNames})`;
         }
 
         if (table.foreignKeys.length > 0 && createForeignKeys) {
@@ -1378,7 +1380,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         if (index.isUnique)
             indexType += "UNIQUE ";
         if (index.isSpatial)
-            throw new Error(`NYI: spanner: index.isSpatial`); //indexType += "SPATIAL ";
+            indexType += "NULL_FILTERED ";
         if (index.isFulltext)
             throw new Error(`NYI: spanner: index.isFulltext`); //indexType += "FULLTEXT "; 
         return `CREATE ${indexType}INDEX \`${index.name}\` ON ${this.escapeTableName(table)}(${columns})`;
@@ -1443,9 +1445,11 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      */
     protected escapeTableName(target: Table|string, disableEscape?: boolean): string {
         const tableName = target instanceof Table ? target.name : target;
-        return tableName.split(".").map(i => disableEscape ? i : `\`${i}\``).join(".");
+        // use slice(1) to omit database name, because spanner raise error like 
+        // Expecting '(' but found an unknown character (".").
+        return tableName.split(".").map(i => disableEscape ? i : `\`${i}\``).slice(1).join(".");
     }
-
+    
     /**
      * Builds a part of query to create/change a column.
      */
@@ -1479,26 +1483,27 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         if (!column.isNullable)
             c += " NOT NULL";
 
-        // explicit null not supported silently ignored.
+        // explicit nullable modifier not supported. silently ignored.
         // if (column.isNullable) c += " NULL";
         
         // primary key can be specified only at table creation
         // not error but does not take effect here.
         // if (column.isPrimary && !skipPrimary) c += " PRIMARY KEY";
 
-        // auto increment is not supported
-        if (column.isGenerated && column.generationStrategy === "increment") // don't use skipPrimary here since updates can update already exist primary without auto inc.
-            throw new Error(`NYI: spanner: column.generationStrategy = "increment"`);
+        // spanner does not support any generated columns, nor default value.
+        // we should create metadata table and get information about generated columns
+        // if (column.isGenerated && column.generationStrategy === "increment") {
+        // }
 
-        // no comment support silently ignored.
+        // does not support comment. 
         if (column.comment)
             throw new Error(`NYI: spanner: column.comment`); //c += ` COMMENT '${column.comment}'`;
 
-        // no default.
+        // does not support any default value.
         if (column.default !== undefined && column.default !== null)
             throw new Error(`NYI: spanner: column.default`); //c += ` DEFAULT ${column.default}`;
         
-        // on update not supported
+        // does not support on update
         if (column.onUpdate)
             throw new Error(`NYI: spanner: column.onUpdate`); //c += ` ON UPDATE ${column.onUpdate}`;
 
