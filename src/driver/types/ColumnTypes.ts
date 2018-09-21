@@ -6,6 +6,7 @@ export type PrimaryGeneratedColumnType = "int" // mysql, mssql, oracle, sqlite
     |"int4" // postgres, cockroachdb
     |"int8" // postgres, sqlite, cockroachdb
     |"integer" // postgres, oracle, sqlite, mysql, cockroachdb
+    |"int64" // spanner
     |"tinyint" // mysql, mssql, sqlite
     |"smallint" // mysql, postgres, mssql, oracle, sqlite, cockroachdb
     |"mediumint" // mysql, sqlite
@@ -33,6 +34,7 @@ export type WithPrecisionColumnType = "float" // mysql, mssql, oracle, sqlite
     |"numeric" // postgres, mssql, sqlite, mysql
     |"real" // mysql, postgres, mssql, oracle, sqlite, cockroachdb
     |"double precision" // postgres, oracle, sqlite, mysql, cockroachdb
+    |"float64" // spanner
     |"number" // oracle
     |"datetime" // mssql, mysql, sqlite
     |"datetime2" // mssql
@@ -64,8 +66,9 @@ export type WithLengthColumnType = "character varying" // postgres, cockroachdb
     |"raw" // oracle
     |"binary" // mssql
     |"varbinary" // mssql
-    |"string"; // cockroachdb
-
+    |"bytes" // spanner
+    |"string"; // spanner, cockroachdb
+     
 export type WithWidthColumnType = "tinyint" // mysql
     |"smallint" // mysql
     |"mediumint" // mysql
@@ -96,10 +99,12 @@ export type SimpleColumnType =
     |"float8" // postgres, cockroachdb
     |"smallmoney" // mssql
     |"money" // postgres, mssql
+    |"int64" // spanner
+    |"float64" // spanner
 
     // boolean types
     |"boolean" // postgres, sqlite, mysql, cockroachdb
-    |"bool" // postgres, mysql, cockroachdb
+    |"bool" // postgres, mysql, cockroachdb, spanner
 
     // text/binary types
     |"tinyblob" // mysql
@@ -127,6 +132,7 @@ export type SimpleColumnType =
     |"timetz" // postgres
     |"timestamptz" // postgres, cockroachdb
     |"timestamp with local time zone" // oracle
+    |"timestamp" // spanner
     |"smalldatetime" // mssql
     |"date" // mysql, postgres, mssql, oracle, sqlite
     |"interval year to month" // oracle

@@ -10,11 +10,17 @@ import {DriverPackageNotInstalledError} from "../../error/DriverPackageNotInstal
 import {PlatformTools} from "../../platform/PlatformTools";
 import {ColumnMetadata} from "../../metadata/ColumnMetadata";
 import {TableColumn} from "../../schema-builder/table/TableColumn";
+import {TableOptions} from "../../schema-builder/options/TableOptions";
+import {TableColumnOptions} from "../../schema-builder/options/TableColumnOptions";
+import {TableIndexOptions} from "../../schema-builder/options/TableIndexOptions";
+import {TableForeignKeyOptions} from "../../schema-builder/options/TableForeignKeyOptions";
+import {TableUniqueOptions} from "../../schema-builder/options/TableUniqueOptions";
 import {EntityMetadata} from "../../metadata/EntityMetadata";
 import {DateUtils} from "../../util/DateUtils";
 import {SpannerDatabase} from "./SpannerRawTypes";
 import {Table} from "../../schema-builder/table/Table";
 import {ObjectLiteral} from "../../common/ObjectLiteral";
+import {DataTypeNotSupportedError} from "../../error/DataTypeNotSupportedError";
 
 /**
  * Organizes communication with MySQL DBMS.
@@ -73,14 +79,13 @@ export class SpannerDriver implements Driver {
      * @see https://dev.mysql.com/doc/refman/5.7/en/data-types.html
      */
     supportedDataTypes: ColumnType[] = [
-        "bigint",
-        "blob",
+        "int64",
+        "bytes",
         "bool",
         "date",
-        "double",
-        "text",
+        "float64",
+        "string",
         "timestamp",
-
     ];
 
     /**
@@ -93,30 +98,30 @@ export class SpannerDriver implements Driver {
      * Gets list of column data types that support length by a driver.
      */
     withLengthColumnTypes: ColumnType[] = [
-        "blob",
-        "text",
+        "bytes",
+        "string",
     ];
 
     /**
      * Gets list of column data types that support length by a driver.
      */
     withWidthColumnTypes: ColumnType[] = [
-        "blob",
-        "text",
+        "bytes",
+        "string",
     ];
 
     /**
      * Gets list of column data types that support precision by a driver.
      */
     withPrecisionColumnTypes: ColumnType[] = [
-        "double",
+        "float64",
     ];
 
     /**
      * Gets list of column data types that supports scale by a driver.
      */
     withScaleColumnTypes: ColumnType[] = [
-        "double",
+        "float64",
     ];
 
     /**
@@ -136,17 +141,17 @@ export class SpannerDriver implements Driver {
         updateDate: "timestamp",
         updateDatePrecision: 20,
         updateDateDefault: "CURRENT_TIMESTAMP(6)",
-        version: "bigint",
-        treeLevel: "bigint",
-        migrationId: "bigint",
-        migrationName: "text",
+        version: "int64",
+        treeLevel: "int64",
+        migrationId: "int64",
+        migrationName: "string",
         migrationTimestamp: "timestamp",
-        cacheId: "bigint",
-        cacheIdentifier: "text",
-        cacheTime: "bigint",
-        cacheDuration: "bigint",
-        cacheQuery: "text",
-        cacheResult: "text",
+        cacheId: "int64",
+        cacheIdentifier: "string",
+        cacheTime: "int64",
+        cacheDuration: "int64",
+        cacheQuery: "string",
+        cacheResult: "string",
     };
 
     /**
@@ -154,13 +159,13 @@ export class SpannerDriver implements Driver {
      * Used in the cases when length/precision/scale is not specified by user.
      */
     dataTypeDefaults: DataTypeDefaults = {
-        "text": { length: 255 },
+        "string": { length: 255 },
         "timestamp": { width: 20 },
         "date": { width: 10 },
         "bool": { width: 1 },
-        "blob": { length: 255 },
-        "double": { precision: 22 },
-        "bigint": { width: 20 }
+        "bytes": { length: 255 },
+        "float64": { precision: 22 },
+        "int64": { width: 20 }
     };
 
     // -------------------------------------------------------------------------
@@ -227,8 +232,12 @@ export class SpannerDriver implements Driver {
         } else if (tableNames instanceof Table) {
             tableNames = [tableNames.name];
         }
+        const schemasMap: { 
+            [dbname: string]: {
+                [tableName: string]: Table
+            } 
+        } = {};
         return Promise.all(tableNames.map(async (tableName:string) => {
-            const table = new Table();
             let [dbname, name] = tableName.split(".");
             if (!name) {
                 if (!this.spanner.active) {
@@ -237,9 +246,12 @@ export class SpannerDriver implements Driver {
                 name = dbname;
                 dbname = this.spanner.active;
             }
-            // const database = await this.createDatabase(dbname);
-            // const datas = database.getSchema();
-            return table;
+            if (!schemasMap[dbname]) {
+                const database = await this.createDatabase(dbname);
+                const schemas = await database.getSchema();
+                schemasMap[dbname] = this.parseSchema(schemas);
+            }
+            return schemasMap[dbname][name];
         }));
     }
     getDatabases(): string[] {
@@ -344,9 +356,10 @@ export class SpannerDriver implements Driver {
     /**
      * Build full table name with database name, schema name and table name.
      * E.g. "myDB"."mySchema"."myTable"
+     * but spanner does not allow to prefix database name, we just returns table name.
      */
     buildTableName(tableName: string, schema?: string, database?: string): string {
-        return database ? `${database}.${tableName}` : tableName;
+        return tableName;
     }
 
     /**
@@ -359,29 +372,26 @@ export class SpannerDriver implements Driver {
         if (value === null || value === undefined)
             return value;
 
-        if (columnMetadata.type === Boolean) {
-            return value === true ? 1 : 0;
-
-        } else if (columnMetadata.type === "date") {
-            return DateUtils.mixedDateToDateString(value);
-
-        } else if (columnMetadata.type === "time") {
-            return DateUtils.mixedDateToTimeString(value);
-
-        } else if (columnMetadata.type === "json") {
-            return JSON.stringify(value);
-
-        } else if (columnMetadata.type === "timestamp" || columnMetadata.type === "datetime" || columnMetadata.type === Date) {
+        if (columnMetadata.type === "timestamp" || 
+            columnMetadata.type === "date" || 
+            columnMetadata.type === Date) {
             return DateUtils.mixedDateToDate(value);
 
-        } else if (columnMetadata.type === "simple-array") {
+        } /*else if (columnMetadata.type === "simple-array") {
             return DateUtils.simpleArrayToString(value);
 
         } else if (columnMetadata.type === "simple-json") {
             return DateUtils.simpleJsonToString(value);
+        } */ else if (
+            columnMetadata.type == "int64" ||
+            columnMetadata.type == "float64" ||
+            columnMetadata.type == "bool" ||
+            columnMetadata.type == "string" ||
+            columnMetadata.type == "bytes") {
+            return value;
         }
 
-        return value;
+        throw new DataTypeNotSupportedError(columnMetadata, columnMetadata.type, "spanner");
     }
 
     /**
@@ -391,26 +401,24 @@ export class SpannerDriver implements Driver {
         if (value === null || value === undefined)
             return value;
 
-        if (columnMetadata.type === Boolean) {
-            value = value ? true : false;
+        if (columnMetadata.type === "timestamp" || 
+            columnMetadata.type === "date" || 
+            columnMetadata.type === Date) {
+            value = DateUtils.mixedDateToDate(value);
 
-        } else if (columnMetadata.type === "datetime" || columnMetadata.type === Date) {
-            value = DateUtils.normalizeHydratedDate(value);
-
-        } else if (columnMetadata.type === "date") {
-            value = DateUtils.mixedDateToDateString(value);
-
-        } else if (columnMetadata.type === "json") {
-            value = typeof value === "string" ? JSON.parse(value) : value;
-
-        } else if (columnMetadata.type === "time") {
-            value = DateUtils.mixedTimeToString(value);
-
-        } else if (columnMetadata.type === "simple-array") {
-            value = DateUtils.stringToSimpleArray(value);
+        } /*else if (columnMetadata.type === "simple-array") {
+            value = DateUtils.simpleArrayToString(value);
 
         } else if (columnMetadata.type === "simple-json") {
-            value = DateUtils.stringToSimpleJson(value);
+            value = DateUtils.simpleJsonToString(value);
+        } */ else if (
+            columnMetadata.type == "int64" ||
+            columnMetadata.type == "float64" ||
+            columnMetadata.type == "bool" ||
+            columnMetadata.type == "string" ||
+            columnMetadata.type == "bytes") {
+        } else {
+            throw new DataTypeNotSupportedError(columnMetadata, columnMetadata.type, "spanner");
         }
 
         if (columnMetadata.transformer)
@@ -424,28 +432,22 @@ export class SpannerDriver implements Driver {
      */
     normalizeType(column: { type: ColumnType, length?: number|string, precision?: number|null, scale?: number }): string {
         if (column.type === Number || column.type === "integer") {
-            return "bigint";
+            return "int64";
 
         } else if (column.type === String || column.type === "nvarchar") {
-            return "text";
+            return "string";
 
         } else if (column.type === Date) {
             return "timestamp";
 
         } else if ((column.type as any) === Buffer) {
-            return "blob";
+            return "bytes";
 
         } else if (column.type === Boolean) {
             return "bool";
 
-        } else if (column.type === "numeric" || column.type === "dec") {
-            return "double";
-
-        } else if (column.type === "uuid") {
-            return "blob";
-
         } else if (column.type === "simple-array" || column.type === "simple-json") {
-            return "text";
+            return "string";
 
         } else {
             return column.type as string || "";
@@ -491,12 +493,9 @@ export class SpannerDriver implements Driver {
 
         switch (column.type) {
             case String:
-            case "varchar":
-            case "nvarchar":
+            case "string":
                 return "255";
-            case "uuid":
-                return "36";
-            case "varbinary":
+            case "bytes":
                 return "255";
             default:
                 return "";
@@ -670,5 +669,164 @@ export class SpannerDriver implements Driver {
         }
 
         return columnMetadataValue === databaseValue;
+    }
+
+    /**
+     * 
+     */
+    protected linkOptions(optionsMap: {[tableName: string]: TableOptions} ) {
+
+    }
+
+    /**
+     * 
+     */
+    protected parseTypeName(typeName: string): {
+        typeName: string;
+        isArray: boolean;
+        length: number;
+    } {
+        const tm = typeName.match(/([^\(]+)\((\d+)\)/);
+        if (tm) {
+            return {
+                typeName: tm[1],
+                isArray: false,
+                length: Number(tm[2])
+            };
+        } 
+        const am = typeName.match(/([^<]+)<(\w+)>/);
+        if (am) {
+            return {
+                typeName,
+                isArray: true,
+                length: 1
+            }
+        }
+        return {
+            typeName,
+            isArray: false,
+            length: 1
+        }
+    }
+
+     /**
+     * parse output of database.getSchema to generate Table object
+     */
+    protected parseSchema(schemas: any): {[tableName: string]: Table} {
+        const tableOptionsMap: {[tableName: string]: TableOptions} = {};
+        for (const stmt of schemas[0]) {
+            // console.log('stmt', stmt);
+            // stmt =~ /CREATE ${tableName} (IF NOT EXISTS) (${columns}) ${interleaves}/
+            /* example. 
+            CREATE TABLE migrations (
+                id INT64 NOT NULL,
+                timestamp TIMESTAMP NOT NULL,
+                name STRING(255) NOT NULL,
+            ) PRIMARY KEY(id)
+            in below regex, ,(?=\s*\)) is matched `,\n)` just before PRIMARY KEY
+            */
+            const m = stmt.match(/\s*CREATE\s+TABLE\s+(\w+)\s?[^\(]*\(([\s\S]*?),(?=\s*\))\s*\)([\s\S]*)/);
+            if (!m) {
+                throw new Error("invalid ddl format:" + stmt);
+            }
+            const tableName: string = m[1]; 
+            const columnStmts: string = m[2];
+            const indexStmts: string = m[3];
+            // parse columns
+            const columns: TableColumnOptions[] = [];
+            for (const columnStmt of columnStmts.split(',')) {
+                // console.log('columnStmt', `[${columnStmt}]`);
+                const cm = columnStmt.match(/(\w+)\s+([\w\(\)]+)\s+([^\n]*)/);
+                if (!cm) {
+                    throw new Error("invalid ddl column format:" + columnStmt);
+                }
+                const type = this.parseTypeName(cm[2]);
+                // check and store constraint with m[3]
+                columns.push({
+                    name: cm[1],
+                    type: type.typeName,
+                    isNullable: cm[3].indexOf("NOT NULL") >= 0,
+                    isGenerated: false,
+                    isPrimary: false, // set afterwards
+                    isUnique: false, // set afterwards
+                    isArray: type.isArray,
+                    length: type.length.toString(), 
+                    zerofill: true,
+                    unsigned: false,
+                });
+            }
+            // parse primary and interleave statements
+            const indices: TableIndexOptions[] = [];
+            const foreignKeys: TableForeignKeyOptions[] = [];
+            const uniques: TableUniqueOptions[] = [];
+            // probably tweak required (need to see actual index/interleave statements format)
+            for (const idxStmt of indexStmts.split(',')) {
+                // distinguish index and foreignKey. fk should contains INTERLEAVE
+                if (idxStmt.indexOf("INTERLEAVE") >= 0) {
+                    // foreighkey
+                    // idxStmt =~ INTERLEAVE IN PARENT ${this.escapeTableName(fk.referencedTableName)}
+                    idxStmt.replace(/INTERLEAVE\s+IN\s+PARENT\s+(\w+)\((\w+)\)/, (m) => {
+                        foreignKeys.push({
+                            name: tableName,
+                            columnNames: [`${m[2]}_id`],
+                            referencedTableName: m[2],
+                            referencedColumnNames: [] // set afterwards (primary key column of referencedTable)
+                        });
+                        return m[0];
+                    });
+                } else if (idxStmt.indexOf("PRIMARY") >= 0) {
+                    // primary key
+                    // idxStmt =~ PRIMARY KEY (${columns})
+                    idxStmt.replace(/PRIMARY\s+KEY\s+\((\w+)\)/g, (m) => {
+                        for (const primaryColumnName of m[1].split(',').map(e => e.trim())) {
+                            const options = columns.find(c => c.name == primaryColumnName);
+                            if (options) {
+                                options.isPrimary = true;
+                            }
+                        }
+                        return m[0];
+                    });
+                } else {
+                    // index
+                    // idxStmt =~ (UNIQUE|NULL_FILTERED) INDEX ${name} ON ${tableName}(${columns})
+                    idxStmt.replace(/(\w*)\s?INDEX\s+(\w+)\s+ON\s(\w+)\((\w+)\)(.*)/g, (m) => {
+                        const tableIndexOptions = {
+                            name: m[2],
+                            columnNames: m[4].split(",").map(e => e.trim()),
+                            isUnique: m[1].indexOf("UNIQUE") >= 0,
+                            isSpatial: m[1].indexOf("NULL_FILTERED") >= 0
+                        };
+                        indices.push(tableIndexOptions);
+                        if (tableIndexOptions.isUnique) {
+                            uniques.push({
+                                name: tableIndexOptions.name,
+                                columnNames: tableIndexOptions.columnNames
+                            });
+                            for (const uniqueColumnName in tableIndexOptions.columnNames) {
+                                const options = columns.find(c => c.name == uniqueColumnName);
+                                if (options) {
+                                    options.isUnique = true;
+                                }
+                            }
+                        }
+                        return m[0];
+                    });
+                }
+            }
+            tableOptionsMap[tableName] = {
+                name: tableName,
+                columns,
+                indices,
+                foreignKeys,
+                uniques
+            };
+        }
+        this.linkOptions(tableOptionsMap);
+        const result: { [tableName:string]: Table } = {};
+        for (const tableName in tableOptionsMap) {
+            result[tableName] = new Table(tableOptionsMap[tableName]);
+            //console.log('table', tableName, result[tableName]);
+        }
+        return result;
     }
 }
