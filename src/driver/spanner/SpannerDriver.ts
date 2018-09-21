@@ -17,10 +17,13 @@ import {TableForeignKeyOptions} from "../../schema-builder/options/TableForeignK
 import {TableUniqueOptions} from "../../schema-builder/options/TableUniqueOptions";
 import {EntityMetadata} from "../../metadata/EntityMetadata";
 import {DateUtils} from "../../util/DateUtils";
-import {SpannerDatabase} from "./SpannerRawTypes";
+import {SpannerDatabase, SpannerExtendSchemas} from "./SpannerRawTypes";
 import {Table} from "../../schema-builder/table/Table";
 import {ObjectLiteral} from "../../common/ObjectLiteral";
 import {DataTypeNotSupportedError} from "../../error/DataTypeNotSupportedError";
+
+
+export const SpannerColumnUpdateWithCommitTimestamp = "commit_timestamp";
 
 /**
  * Organizes communication with MySQL DBMS.
@@ -199,6 +202,7 @@ export class SpannerDriver implements Driver {
                 this.spanner.databases[name] = {
                     handle: database,
                     tables: {},
+                    schemas: null,
                 }
                 if (!this.spanner.active) {
                     this.spanner.active = name;
@@ -226,18 +230,22 @@ export class SpannerDriver implements Driver {
             }
         })();
     }
-    loadTables(tableNames: string[]|Table|string): Promise<Table[]> {
+    /**
+     * load tables. cache them into this.spanner.databases too.
+     * @param tableNames table names which need to load. 
+     */
+    loadTables(tableNames: string[]|Table|string, queryRunner: SpannerQueryRunner): Promise<Table[]> {
         if (typeof tableNames === 'string') {
             tableNames = [tableNames];
         } else if (tableNames instanceof Table) {
             tableNames = [tableNames.name];
         }
-        const schemasMap: { 
+        const tablesMap: { 
             [dbname: string]: {
-                [tableName: string]: Table
+                tables: { [tableName: string]: Table }
             } 
-        } = {};
-        return Promise.all(tableNames.map(async (tableName:string) => {
+        } = this.spanner.databases;
+        return Promise.all(tableNames.map(async (tableName: string) => {
             let [dbname, name] = tableName.split(".");
             if (!name) {
                 if (!this.spanner.active) {
@@ -246,12 +254,12 @@ export class SpannerDriver implements Driver {
                 name = dbname;
                 dbname = this.spanner.active;
             }
-            if (!schemasMap[dbname]) {
+            if (Object.keys(tablesMap[dbname].tables).length === 0) {
                 const database = await this.createDatabase(dbname);
                 const schemas = await database.getSchema();
-                schemasMap[dbname] = this.parseSchema(schemas);
+                Object.assign(tablesMap[dbname], this.parseSchema(dbname, schemas, queryRunner));
             }
-            return schemasMap[dbname][name];
+            return tablesMap[dbname].tables[name];
         }));
     }
     getDatabases(): string[] {
@@ -460,7 +468,10 @@ export class SpannerDriver implements Driver {
     normalizeDefault(columnMetadata: ColumnMetadata): string {
         const defaultValue = columnMetadata.default;
 
-        if (typeof defaultValue === "number") {
+        if (columnMetadata.isUpdateDate) {
+            return SpannerColumnUpdateWithCommitTimestamp;
+
+        } else if (typeof defaultValue === "number") {
             return "" + defaultValue;
 
         } else if (typeof defaultValue === "boolean") {
@@ -679,7 +690,7 @@ export class SpannerDriver implements Driver {
     }
 
     /**
-     * 
+     * parse typename and return additional information required by TableColumn object.
      */
     protected parseTypeName(typeName: string): {
         typeName: string;
@@ -712,8 +723,13 @@ export class SpannerDriver implements Driver {
      /**
      * parse output of database.getSchema to generate Table object
      */
-    protected parseSchema(schemas: any): {[tableName: string]: Table} {
+    protected async parseSchema(dbName: string, schemas: any, queryRunner: SpannerQueryRunner): Promise<{[tableName: string]: Table}> {
         const tableOptionsMap: {[tableName: string]: TableOptions} = {};
+        let extendSchemas: SpannerExtendSchemas|null = this.spanner.databases[dbName].schemas;
+        if (!extendSchemas) {
+            extendSchemas = await queryRunner.createAndLoadSchemaTableIfNotExists(this.options.schemaTableName);
+            this.spanner.databases[dbName].schemas = extendSchemas;
+        }
         for (const stmt of schemas[0]) {
             // console.log('stmt', stmt);
             // stmt =~ /CREATE ${tableName} (IF NOT EXISTS) (${columns}) ${interleaves}/
@@ -741,18 +757,19 @@ export class SpannerDriver implements Driver {
                     throw new Error("invalid ddl column format:" + columnStmt);
                 }
                 const type = this.parseTypeName(cm[2]);
+                const extendSchema = extendSchemas[tableName][cm[1]] || {};
                 // check and store constraint with m[3]
                 columns.push({
                     name: cm[1],
                     type: type.typeName,
-                    isNullable: cm[3].indexOf("NOT NULL") >= 0,
-                    isGenerated: false,
+                    isNullable: cm[3].indexOf("NOT NULL") < 0,
+                    isGenerated: !!extendSchema.generator,
                     isPrimary: false, // set afterwards
                     isUnique: false, // set afterwards
                     isArray: type.isArray,
                     length: type.length.toString(), 
-                    zerofill: true,
-                    unsigned: false,
+                    default: extendSchema.default,
+                    generationStrategy: extendSchema.generatorStorategy,
                 });
             }
             // parse primary and interleave statements
@@ -825,7 +842,7 @@ export class SpannerDriver implements Driver {
         const result: { [tableName:string]: Table } = {};
         for (const tableName in tableOptionsMap) {
             result[tableName] = new Table(tableOptionsMap[tableName]);
-            //console.log('table', tableName, result[tableName]);
+            console.log('table', tableName, result[tableName]);
         }
         return result;
     }
