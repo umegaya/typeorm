@@ -6,6 +6,7 @@ import {QueryPartialEntity} from "./QueryPartialEntity";
 import {SqlServerDriver} from "../driver/sqlserver/SqlServerDriver";
 import {PostgresDriver} from "../driver/postgres/PostgresDriver";
 import {MysqlDriver} from "../driver/mysql/MysqlDriver";
+import {SpannerDriver} from "../driver/spanner/SpannerDriver";
 import {RandomGenerator} from "../util/RandomGenerator";
 import {InsertResult} from "./result/InsertResult";
 import {ReturningStatementNotSupportedError} from "../error/ReturningStatementNotSupportedError";
@@ -404,7 +405,8 @@ export class InsertQueryBuilder<Entity> extends QueryBuilder<Entity> {
                             } else {
                                 expression += "NULL"; // otherwise simply use NULL and pray if column is nullable
                             }
-
+                        } else if (this.connection.driver instanceof SpannerDriver) {
+                            expression += this.connection.driver.normalizeDefault(column);
                         } else {
                             expression += "DEFAULT";
                         }

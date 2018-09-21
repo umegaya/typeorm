@@ -6,8 +6,10 @@ import {Table} from "../../schema-builder/table/Table";
 import {TableForeignKey} from "../../schema-builder/table/TableForeignKey";
 import {TableIndex} from "../../schema-builder/table/TableIndex";
 import {QueryRunnerAlreadyReleasedError} from "../../error/QueryRunnerAlreadyReleasedError";
-import {SpannerDriver} from "./SpannerDriver";
+import {SpannerDriver, SpannerColumnUpdateWithCommitTimestamp} from "./SpannerDriver";
+import {SpannerExtendSchemas} from "./SpannerRawTypes";
 import {ReadStream} from "../../platform/PlatformTools";
+import {RandomGenerator} from "../../util/RandomGenerator";
 import {QueryFailedError} from "../../error/QueryFailedError";
 import {TableUnique} from "../../schema-builder/table/TableUnique";
 import {BaseQueryRunner} from "../../query-runner/BaseQueryRunner";
@@ -15,7 +17,9 @@ import {Broadcaster} from "../../subscriber/Broadcaster";
 import {PromiseUtils} from "../../index";
 import {TableCheck} from "../../schema-builder/table/TableCheck";
 import {IsolationLevel} from "../types/IsolationLevel";
-import { QueryBuilder } from "../../query-builder/QueryBuilder";
+import {QueryBuilder} from "../../query-builder/QueryBuilder";
+import {ObjectLiteral} from "../../common/ObjectLiteral";
+
 
 /**
  * Runs queries on a single mysql database connection.
@@ -39,6 +43,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      * transaction if startsTransaction
      */
     protected tx: any; 
+
 
     // -------------------------------------------------------------------------
     // Constructor
@@ -247,7 +252,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      * Checks if table with the given name exist in the database.
      */
     async hasTable(tableOrName: Table|string): Promise<boolean> {
-        const table = await this.driver.loadTables(tableOrName);
+        const table = await this.driver.loadTables(tableOrName, this);
         return !!table[0];
     }
 
@@ -255,7 +260,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      * Checks if column with the given name exist in the given table.
      */
     async hasColumn(tableOrName: Table|string, column: TableColumn|string): Promise<boolean> {
-        const tables = await this.driver.loadTables(tableOrName);
+        const tables = await this.driver.loadTables(tableOrName, this);
         return !!tables[0].columns.find((c: TableColumn) => {
             if (typeof column === 'string' && c.name == column) {
                 return true;
@@ -324,7 +329,10 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         if (createForeignKeys)
             table.foreignKeys.forEach(foreignKey => downQueries.push(this.dropForeignKeySql(table, foreignKey)));
 
-        return this.executeQueries(upQueries, downQueries);
+        await this.executeQueries(upQueries, downQueries);
+
+        // if table creation success, sync schema table
+        await Promise.all(table.columns.map(c => { return this.syncExtendSchema(table, c) }));
     }
 
     /**
@@ -502,6 +510,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         }
 
         await this.executeQueries(upQueries, downQueries);
+        await this.syncExtendSchema(table, column);
 
         clonedTable.addColumn(column);
         this.replaceCachedTable(table, clonedTable);
@@ -542,13 +551,12 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      * according to https://cloud.google.com/spanner/docs/schema-updates, only below are allowed
      * - Change a STRING column to a BYTES column or a BYTES column to a STRING column.
      * - Increase or decrease the length limit for a STRING or BYTES type (including to MAX), unless it is a primary key column inherited by one or more child tables.
+     * - Add/Remove NOT NULL constraint for non-key column
      * - Enable or disable commit timestamps in value and primary key columns.
      */
     async changeColumn(tableOrName: Table|string, oldColumnOrName: TableColumn|string, newColumn: TableColumn): Promise<void> {
         //TODO: implement above changes in comment
-        throw new Error(`NYI: spanner: changeColumn`);
 
-        /*
         const table = tableOrName instanceof Table ? tableOrName : await this.getCachedTable(tableOrName);
         let clonedTable = table.clone();
         const upQueries: string[] = [];
@@ -560,6 +568,74 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         if (!oldColumn)
             throw new Error(`Column "${oldColumnOrName}" was not found in the "${table.name}" table.`);
 
+        if (oldColumn.name !== newColumn.name) {
+            throw new Error(`NYI: spanner: changeColumn: change column name ${oldColumn.name} => ${newColumn.name}`);
+        }
+
+        if (oldColumn.type !== newColumn.type) {
+            // - Change a STRING column to a BYTES column or a BYTES column to a STRING column.
+            if (!(oldColumn.type === "string" && newColumn.type === "bytes") &&
+                !(oldColumn.type === "bytes" && newColumn.type === "string")) {
+                throw new Error(`NYI: spanner: changeColumn: change column type ${oldColumn.type} => ${newColumn.type}`);
+            }
+        }
+
+        if (oldColumn.length && newColumn.length && (oldColumn.length !== newColumn.length)) {
+            // - Increase or decrease the length limit for a STRING or BYTES type (including to MAX)
+            if (!(oldColumn.type === "string" && newColumn.type === "bytes") &&
+                !(oldColumn.type === "bytes" && newColumn.type === "string")) {
+                throw new Error(`NYI: spanner: changeColumn: change column type ${oldColumn.type} => ${newColumn.type}`);
+            }
+            // TODO: implement following check.
+            // `unless it is a primary key column inherited by one or more child tables.`
+        }
+
+        if (oldColumn.isNullable !== newColumn.isNullable) {
+            // - Add/Remove NOT NULL constraint for non-key column
+            if (clonedTable.indices.find(index => {
+                return index.columnNames.length === 1 && index.columnNames[0] === newColumn.name;
+            })) {
+                throw new Error(`NYI: spanner: changeColumn: change nullable for ${oldColumn.name}, which is indexed`);
+            }
+        }
+
+        // - Enable or disable commit timestamps in value and primary key columns.
+        if (oldColumn.default !== newColumn.default) {
+            if (newColumn.default !== SpannerColumnUpdateWithCommitTimestamp &&
+                oldColumn.default !== SpannerColumnUpdateWithCommitTimestamp) {
+                throw new Error(`NYI: spanner: changeColumn: set default ${oldColumn.default} => ${newColumn.default}`);
+
+            }
+        }
+
+        // any other invalid changes
+        if (oldColumn.isPrimary !== newColumn.isPrimary ||
+            oldColumn.asExpression !== newColumn.asExpression ||
+            oldColumn.charset !== newColumn.charset || 
+            oldColumn.collation !== newColumn.collation ||
+            oldColumn.comment !== newColumn.comment ||
+            // default is managed by schemas table. 
+            oldColumn.enum !== newColumn.enum ||
+            oldColumn.generatedType !== newColumn.generatedType ||
+            // generationStorategy is managed by schemas table
+            oldColumn.isArray !== newColumn.isArray
+            // isGenerated is managed by schemas table
+        ) {
+            throw new Error(`NYI: spanner: changeColumn: not supported change ${oldColumn} => ${newColumn}`);
+        }
+
+        // if actually changed, store SQLs
+        if (this.isColumnChanged(oldColumn, newColumn, true)) {
+            upQueries.push(`ALTER TABLE ${this.escapeTableName(table)} ALTER COLUMN \`${oldColumn.name}\` ${this.buildCreateColumnSql(newColumn, true)}`);
+            downQueries.push(`ALTER TABLE ${this.escapeTableName(table)} ALTER COLUMN \`${newColumn.name}\` ${this.buildCreateColumnSql(oldColumn, true)}`);
+        }
+
+        await this.executeQueries(upQueries, downQueries);
+        await this.syncExtendSchema(table, newColumn);
+        this.replaceCachedTable(table, clonedTable);
+
+
+        /*
         if ((newColumn.isGenerated !== oldColumn.isGenerated && newColumn.generationStrategy !== "uuid")
             || oldColumn.type !== newColumn.type
             || oldColumn.length !== newColumn.length
@@ -821,6 +897,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         downQueries.push(`ALTER TABLE ${this.escapeTableName(table)} ADD ${this.buildCreateColumnSql(column, true)}`);
 
         await this.executeQueries(upQueries, downQueries);
+        await this.syncExtendSchema(table, column, true);
 
         clonedTable.removeColumn(column);
         this.replaceCachedTable(table, clonedTable);
@@ -1128,6 +1205,89 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         }*/
     }
 
+    /**
+     * create `schemas` table which describe additional column information such as
+     * generated column's increment strategy or default value
+     * @database: spanner's database object. 
+     */
+    async createAndLoadSchemaTableIfNotExists(tableName?: string): Promise<SpannerExtendSchemas> {
+        tableName = tableName || "schemas";
+        const tableExist = await this.hasTable(tableName); // todo: table name should be configurable
+        if (!tableExist) {
+            await this.createTable(new Table(
+                {
+                    name: tableName,
+                    columns: [
+                        {
+                            name: "table",
+                            type: this.connection.driver.normalizeType({type: this.connection.driver.mappedDataTypes.migrationName}),
+                            isPrimary: true,
+                            isNullable: false
+                        },
+                        {
+                            name: "column",
+                            type: this.connection.driver.normalizeType({type: this.connection.driver.mappedDataTypes.migrationName}),
+                            isPrimary: true,
+                            isNullable: false
+                        },
+                        {
+                            name: "type",
+                            type: this.connection.driver.normalizeType({type: this.connection.driver.mappedDataTypes.migrationName}),
+                            isPrimary: true,
+                            isNullable: false
+                        },
+                        {
+                            name: "value",
+                            type: this.connection.driver.normalizeType({type: this.connection.driver.mappedDataTypes.migrationName}),
+                            isNullable: false
+                        },
+                    ]
+                },
+            ));
+        }
+
+        const rawObjects: ObjectLiteral[] = await this.connection.manager
+            .createQueryBuilder(this)
+            .select()
+            .from(tableName, tableName)
+            .getRawMany();
+
+        const schemas: SpannerExtendSchemas = {};
+        for (const rawObject of rawObjects) {
+            const table = rawObject["table"];
+            if (!schemas[table]) {
+                schemas[table] = {};
+            }
+            const tableSchemas = schemas[table];
+            const column = rawObject["column"];
+            if (!tableSchemas[column]) {
+                tableSchemas[column] = {}
+            }
+            const columnSchema = tableSchemas[column];
+            const type = rawObject["type"];
+            if (type === "generator") {
+                const value = rawObject["value"];
+                if (value == "uuid") {
+                    columnSchema.generatorStorategy = "uuid";
+                    columnSchema.generator = RandomGenerator.uuid4;
+                } else if (value == "increment") {
+                    columnSchema.generatorStorategy = "increment";
+                    // we automatically process increment generation storategy as uuid. 
+                    // because spanner strongly discourage auto increment column. 
+                    // TODO: if there is request, implement auto increment somehow.
+                    console.warn("warn: column value generatorStorategy `increment` treated as `uuid` on spanner, due to performance reason.");
+                    columnSchema.generator = RandomGenerator.uuid4;
+                }
+            } else if (type === "default") {
+                const value = rawObject["value"];
+                columnSchema.default = value;
+                columnSchema.generator = () => { return value; }
+
+            }
+        }
+        return schemas;
+    }
+
     // -------------------------------------------------------------------------
     // Protected Methods
     // -------------------------------------------------------------------------
@@ -1135,22 +1295,22 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
     /**
      * Handle select query
      */
-    select<Entity>(qb: QueryBuilder<Entity>): Promise<any> {
+    protected select<Entity>(qb: QueryBuilder<Entity>): Promise<any> {
         const [query, params] = qb.getQueryAndParameters();
-        return this.tx.run({sql: query, params});
+        return (this.tx || this.databaseConnection).run({sql: query, params});
     }
 
     /**
      * Handle insert query
      */
-    insert<Entity>(qb: QueryBuilder<Entity>): Promise<any> {
-        return this.tx.insert(qb.mainTableName, qb.expressionMap.valuesSet);
+    protected insert<Entity>(qb: QueryBuilder<Entity>): Promise<any> {
+        return (this.tx || this.databaseConnection).insert(qb.mainTableName, qb.expressionMap.valuesSet);
     }
 
     /**
      * Handle update query
      */
-    update<Entity>(qb: QueryBuilder<Entity>): Promise<any> {
+    protected update<Entity>(qb: QueryBuilder<Entity>): Promise<any> {
         return new Promise(async (ok, fail) => {
             try {
                 let vs = qb.expressionMap.valuesSet instanceof Array ? qb.expressionMap.valuesSet : [qb.expressionMap.valuesSet];
@@ -1163,7 +1323,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
                     return;
                 }
                 const value = vs instanceof Array ? vs[0] : vs;
-                const tx = this.tx;
+                const tx = (this.tx || this.databaseConnection);
                 const whex = qb.whereExpression;
                 const query = `SELECT ${table.primaryColumns.map((c) => c.name).join(',')} FROM ${qb.mainTableName}${whex.length > 0 ? ` WHERE ${whex}` : ""}`;
                 const [keys,err] = tx.run(query);
@@ -1185,9 +1345,46 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
     }
 
     /**
+     * Handle upsert query
+     */
+    protected upsert<Entity>(qb: QueryBuilder<Entity>): Promise<any> {
+        return new Promise(async (ok, fail) => {
+            try {
+                let vs = qb.expressionMap.valuesSet instanceof Array ? qb.expressionMap.valuesSet : [qb.expressionMap.valuesSet];
+                if (!vs || vs.length > 1) {
+                    fail(new Error('only single value set can be used spanner update'));
+                }
+                const table = await this.getTable(qb.mainTableName);
+                if (!table) {
+                    fail(new Error(`fatal: no such table ${qb.mainTableName}`));
+                    return;
+                }
+                const value = vs instanceof Array ? vs[0] : vs;
+                const tx = (this.tx || this.databaseConnection);
+                const whex = qb.whereExpression;
+                const query = `SELECT ${table.primaryColumns.map((c) => c.name).join(',')} FROM ${qb.mainTableName}${whex.length > 0 ? ` WHERE ${whex}` : ""}`;
+                const [keys,err] = tx.run(query);
+                if (err) {
+                    this.driver.connection.logger.logQueryError(err, query, [], this);
+                    fail(new QueryFailedError(query, [], err));
+                    return;
+                }
+                const rows = keys;
+                for (const row of rows) {
+                    Object.assign(row, value);
+                }
+                tx.upsert(qb.mainTableName, rows);
+                ok();
+            } catch (e) {
+                fail(e);
+            }
+        });
+    }
+
+    /**
      * Handle delete query
      */
-    delete<Entity>(qb: QueryBuilder<Entity>): Promise<any> {
+    protected delete<Entity>(qb: QueryBuilder<Entity>): Promise<any> {
         return new Promise(async (ok, fail) => {
             try {
                 const table = await this.getTable(qb.mainTableName);
@@ -1195,7 +1392,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
                     fail(new Error(`fatal: no such table ${qb.mainTableName}`));
                     return;
                 }
-                const tx = this.tx;
+                const tx = (this.tx || this.databaseConnection);
                 const whex = qb.whereExpression;
                 const query = `SELECT ${table.primaryColumns.map((c) => c.name).join(',')} FROM ${qb.mainTableName}${whex.length > 0 ? ` WHERE ${whex}` : ""}`;
                 const [keys,err] = tx.run(query);
@@ -1276,7 +1473,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         if (!tableNames || !tableNames.length)
             return [];
 
-        return this.driver.loadTables(tableNames);
+        return this.driver.loadTables(tableNames, this);
     }
 
     /**
@@ -1499,9 +1696,14 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         if (column.comment)
             throw new Error(`NYI: spanner: column.comment`); //c += ` COMMENT '${column.comment}'`;
 
-        // does not support any default value.
-        if (column.default !== undefined && column.default !== null)
-            throw new Error(`NYI: spanner: column.default`); //c += ` DEFAULT ${column.default}`;
+        // does not support any default value except SpannerColumnUpdateWithCommitTimestamp
+        if (column.default !== undefined && column.default !== null) {
+            if (column.default !== SpannerColumnUpdateWithCommitTimestamp) {
+                throw new Error(`NYI: spanner: column.default=${column.default}`); //c += ` DEFAULT ${column.default}`;
+            } else {
+                c += `OPTIONS (allow_commit_timestamp=true)`
+            }
+        }
         
         // does not support on update
         if (column.onUpdate)
@@ -1510,4 +1712,43 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         return c;
     }
 
+    protected buildCreateColumnOptionsSql(column: TableColumn): string {
+        return "";
+    }
+
+    protected async syncExtendSchema(table: Table, column: TableColumn, remove?: boolean): Promise<void> {
+        const promises: Promise<void>[] = [];
+        if (!remove && column.default) {
+            promises.push(this.upsertExtendSchema(table.name, column.name, "default", column.default));
+        } else {
+            promises.push(this.deleteExtendSchema(table.name, column.name, "default"));
+        }
+        if (!remove && column.generationStrategy) {
+            promises.push(this.upsertExtendSchema(table.name, column.name, "generator", column.generationStrategy))
+        } else {
+            promises.push(this.deleteExtendSchema(table.name, column.name, "generator"));
+        }
+        await Promise.all(promises);
+    }
+
+    protected async deleteExtendSchema(table: string, column: string, type: string): Promise<void> {
+        const qb = this.connection.manager
+            .createQueryBuilder(this)
+            .delete()
+            .where("table = :table, column = :column, type = :type", { 
+                table, column, type
+            });
+        return this.delete(qb);
+    }
+
+    protected async upsertExtendSchema(table: string, column: string, type: string, value: string): Promise<void> {
+        const qb = this.connection.manager
+            .createQueryBuilder(this)
+            .update()
+            .set({table, column, type, value})
+            .where("table = :table, column = :column, type = :type", { 
+                table, column, type
+            });
+        return this.upsert(qb);
+    }
 }

@@ -25,4 +25,9 @@ export interface SpannerConnectionOptions extends BaseConnectionOptions {
      */
     readonly database: string;
 
+    /**
+     * extended schema infromation table name
+     */
+    readonly schemaTableName?: string;
+
 }
