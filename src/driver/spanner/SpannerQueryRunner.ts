@@ -68,6 +68,9 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         if (!this.databaseConnection) {
             return (async () => {
                 this.databaseConnection = await this.driver.createDatabase();
+                await this.createAndLoadSchemaTableIfNotExists(
+                    this.driver.options.schemaTableName
+                );
                 return this.databaseConnection;
             })();
         }
@@ -237,8 +240,10 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      * Checks if database with the given name exist.
      */
     async hasDatabase(database: string): Promise<boolean> {
-        const dbs = await this.driver.getDatabases();
-        return dbs.indexOf(database) >= 0;
+        return this.connect().then(async () => {
+            const dbs = await this.driver.getDatabases();
+            return dbs.indexOf(database) >= 0;
+        });
     }
 
     /**
@@ -252,22 +257,26 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      * Checks if table with the given name exist in the database.
      */
     async hasTable(tableOrName: Table|string): Promise<boolean> {
-        const table = await this.driver.loadTables(tableOrName, this);
-        return !!table[0];
+        return this.connect().then(async () => {
+            const table = await this.driver.loadTables(tableOrName, true);
+            return !!table[0];
+        });
     }
 
     /**
      * Checks if column with the given name exist in the given table.
      */
     async hasColumn(tableOrName: Table|string, column: TableColumn|string): Promise<boolean> {
-        const tables = await this.driver.loadTables(tableOrName, this);
-        return !!tables[0].columns.find((c: TableColumn) => {
-            if (typeof column === 'string' && c.name == column) {
-                return true;
-            } else if (column instanceof TableColumn && c.name == column.name) {
-                return true;
-            }
-            return false;
+        return this.connect().then(async () => {
+            const tables = await this.driver.loadTables(tableOrName, true);
+            return !!tables[0].columns.find((c: TableColumn) => {
+                if (typeof column === 'string' && c.name == column) {
+                    return true;
+                } else if (column instanceof TableColumn && c.name == column.name) {
+                    return true;
+                }
+                return false;
+            });
         });
     }
 
@@ -314,11 +323,12 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         const upQueries: string[] = [];
         const downQueries: string[] = [];
 
+        console.log('createTable name=', table.name);
         upQueries.push(this.createTableSql(table, createForeignKeys));
         downQueries.push(this.dropTableSql(table));
 
         // we must first drop indices, than drop foreign keys, because drop queries runs in reversed order
-        // and foreign keys will be dropped firs    t as indices. This order is very important, because we can't drop index
+        // and foreign keys will be dropped first as indices. This order is very important, because we can't drop index
         // if it related to the foreign key.
 
         // createTable does not need separate method to create indices, because it create indices in the same query with table creation.
@@ -331,8 +341,15 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
 
         await this.executeQueries(upQueries, downQueries);
 
-        // if table creation success, sync schema table
-        await Promise.all(table.columns.map(c => { return this.syncExtendSchema(table, c) }));
+        if (!this.driver.isSchemaTable(table)) {
+            console.log('sync ext schemas', table.name);
+            // if table creation success, sync schema table
+            await Promise.all(table.columns.map(c => { return this.syncExtendSchema(table, c) }));
+        }
+
+        // set table to driver
+
+
     }
 
     /**
@@ -1249,7 +1266,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         const rawObjects: ObjectLiteral[] = await this.connection.manager
             .createQueryBuilder(this)
             .select()
-            .from(tableName, tableName)
+            .from(tableName, "")
             .getRawMany();
 
         const schemas: SpannerExtendSchemas = {};
@@ -1293,28 +1310,114 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
     // -------------------------------------------------------------------------
 
     /**
+     * check whether entity has all primary column key
+     */
+    protected doesValueContainAllPrimaryKeys(value: ObjectLiteral, table: Table): boolean {
+        for (const pc of table.primaryColumns) {
+            if (!(pc.name in value)) {
+                return false;
+            }
+        }
+        return true;
+    }
+    /**
+     * get query string to examine select/update/upsert/delete keys. 
+     * null means value contains all key elements already.
+     */
+    protected getKeyExamineQuery<Entity>(value: ObjectLiteral, table: Table, qb: QueryBuilder<Entity>): string|null {
+        if (!this.doesValueContainAllPrimaryKeys(value, table)) {
+            const whex = qb.whereExpression;
+            return `SELECT ${table.primaryColumns.map((c) => c.name).join(',')} FROM ${qb.escapedMainTableName} ${whex}`
+        } else {
+            return null;
+        }
+    }
+
+    /**
+     * wrapper to integrate request by transaction and table
+     */
+    protected request(table: Table, method: string, ...args: any[]): Promise<any> {
+        if (this.tx) {
+            return this.tx[method](table.name, ...args);
+        } else {
+            return this.databaseConnection.table(table.name)[method](...args);
+        }
+    }
+
+    /**
      * Handle select query
      */
     protected select<Entity>(qb: QueryBuilder<Entity>): Promise<any> {
-        const [query, params] = qb.getQueryAndParameters();
-        return (this.tx || this.databaseConnection).run({sql: query, params});
+        if (!this.tx) {
+            const [query, params] = qb.getQueryAndParameters();
+            return this.databaseConnection.run({sql: query, params});
+        } else {
+            return new Promise(async (ok, fail) => {
+                try {
+                    const table = await this.getTable(qb.mainTableName);
+                    if (!table) {
+                        fail(new Error(`fatal: no such table ${qb.mainTableName}`));
+                        return;
+                    }
+                    const tx = this.tx;
+                    const whex = qb.whereExpression;
+                    //TODO: check where expression contains all primary key of the table, 
+                    //if contained, we can omit SELECT statement. 
+                    //currently, I pray spanner's optimizer is so clever that it infers values of keys from where statement.
+                    const query = `SELECT ${table.primaryColumns.map((c) => c.name).join(',')} FROM ${qb.escapedMainTableName} ${whex}`;
+                    const [keys,err] = await this.databaseConnection.run(query);
+                    if (err) {
+                        this.driver.connection.logger.logQueryError(err, query, [], this);
+                        fail(new QueryFailedError(query, [], err));
+                        return;
+                    }
+                    if (!keys || keys.length <= 0) {
+                        ok(); //nothing to select
+                        return;
+                    }
+                    return tx.read(qb.mainTableName, keys, (err: Error, rows: any[]) => {
+                        if (err) {
+                            fail(err);
+                        } else {
+                            ok(rows);
+                        }
+                    });
+                } catch (e) {
+                    fail(e);
+                }
+            });            
+        }
     }
 
     /**
      * Handle insert query
      */
     protected insert<Entity>(qb: QueryBuilder<Entity>): Promise<any> {
-        return (this.tx || this.databaseConnection).insert(qb.mainTableName, qb.expressionMap.valuesSet);
+        console.log('insert', qb.getSql());
+        return new Promise(async (ok, fail) => {
+            try {
+                const table = await this.getTable(qb.mainTableName);
+                if (!table) {
+                    fail(new Error(`fatal: no such table ${qb.mainTableName}`));
+                    return;
+                }
+                await this.request(table, 'insert', qb.expressionMap.valuesSet);
+                ok(qb.expressionMap.valuesSet);
+            } catch (e) {
+                fail(e);
+            }
+        });
     }
 
     /**
      * Handle update query
      */
     protected update<Entity>(qb: QueryBuilder<Entity>): Promise<any> {
+        console.log('update', qb.getSql());
         return new Promise(async (ok, fail) => {
             try {
                 let vs = qb.expressionMap.valuesSet instanceof Array ? qb.expressionMap.valuesSet : [qb.expressionMap.valuesSet];
-                if (!vs || vs.length > 1) {
+                if (!vs || vs.length > 1 || (vs.length == 1 && !vs[0])) {
                     fail(new Error('only single value set can be used spanner update'));
                 }
                 const table = await this.getTable(qb.mainTableName);
@@ -1322,22 +1425,30 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
                     fail(new Error(`fatal: no such table ${qb.mainTableName}`));
                     return;
                 }
-                const value = vs instanceof Array ? vs[0] : vs;
-                const tx = (this.tx || this.databaseConnection);
-                const whex = qb.whereExpression;
-                const query = `SELECT ${table.primaryColumns.map((c) => c.name).join(',')} FROM ${qb.mainTableName}${whex.length > 0 ? ` WHERE ${whex}` : ""}`;
-                const [keys,err] = tx.run(query);
-                if (err) {
-                    this.driver.connection.logger.logQueryError(err, query, [], this);
-                    fail(new QueryFailedError(query, [], err));
-                    return;
+                const value = <ObjectLiteral>vs[0]; //above vs checks assure this cast is valid
+                const query = this.getKeyExamineQuery(value, table, qb);
+                if (query) {
+                    const [keys,err] = await this.databaseConnection.run(query);
+                    if (err) {
+                        this.driver.connection.logger.logQueryError(err, query, [], this);
+                        fail(new QueryFailedError(query, [], err));
+                        return;
+                    }
+                    if (!keys || keys.length <= 0) {
+                        ok(); //nothing to update
+                        return;
+                    }
+                    const rows = keys;
+                    for (const row of rows) {
+                        Object.assign(row, value);
+                    }
+                    await this.request(table, 'update', rows);
+                    ok(rows);                         
+                } else {
+                    await this.request(table, 'update', value);
+                    ok(value);
                 }
-                const rows = keys;
-                for (const row of rows) {
-                    Object.assign(row, value);
-                }
-                tx.update(qb.mainTableName, rows);
-                ok();
+                //const query = `SELECT ${table.primaryColumns.map((c) => c.name).join(',')} FROM ${qb.escapedMainTableName} ${whex}`;
             } catch (e) {
                 fail(e);
             }
@@ -1348,33 +1459,37 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      * Handle upsert query
      */
     protected upsert<Entity>(qb: QueryBuilder<Entity>): Promise<any> {
+        console.log('upsert', qb.getSql());
         return new Promise(async (ok, fail) => {
             try {
                 let vs = qb.expressionMap.valuesSet instanceof Array ? qb.expressionMap.valuesSet : [qb.expressionMap.valuesSet];
-                if (!vs || vs.length > 1) {
-                    fail(new Error('only single value set can be used spanner update'));
+                if (!vs || vs.length > 1 || (vs.length == 1 && !vs[0])) {
+                    fail(new Error('only single value set can be used spanner upsert'));
                 }
                 const table = await this.getTable(qb.mainTableName);
                 if (!table) {
                     fail(new Error(`fatal: no such table ${qb.mainTableName}`));
                     return;
                 }
-                const value = vs instanceof Array ? vs[0] : vs;
-                const tx = (this.tx || this.databaseConnection);
-                const whex = qb.whereExpression;
-                const query = `SELECT ${table.primaryColumns.map((c) => c.name).join(',')} FROM ${qb.mainTableName}${whex.length > 0 ? ` WHERE ${whex}` : ""}`;
-                const [keys,err] = tx.run(query);
-                if (err) {
-                    this.driver.connection.logger.logQueryError(err, query, [], this);
-                    fail(new QueryFailedError(query, [], err));
-                    return;
+                const value = <ObjectLiteral>vs[0]; //above vs checks assure this cast is valid
+                const query = this.getKeyExamineQuery(value, table, qb);
+                if (query) {
+                    const [keys,err] = await this.databaseConnection.run(query);
+                    if (err) {
+                        this.driver.connection.logger.logQueryError(err, query, [], this);
+                        fail(new QueryFailedError(query, [], err));
+                        return;
+                    }
+                    const rows = keys;
+                    for (const row of rows) {
+                        Object.assign(row, value);
+                    }
+                    await this.request(table, 'upsert', rows);
+                    ok(rows);
+                } else {
+                    await this.request(table, 'upsert', value);
+                    ok(value);
                 }
-                const rows = keys;
-                for (const row of rows) {
-                    Object.assign(row, value);
-                }
-                tx.upsert(qb.mainTableName, rows);
-                ok();
             } catch (e) {
                 fail(e);
             }
@@ -1385,6 +1500,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      * Handle delete query
      */
     protected delete<Entity>(qb: QueryBuilder<Entity>): Promise<any> {
+        console.log('delete', qb.getSql());
         return new Promise(async (ok, fail) => {
             try {
                 const table = await this.getTable(qb.mainTableName);
@@ -1392,16 +1508,22 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
                     fail(new Error(`fatal: no such table ${qb.mainTableName}`));
                     return;
                 }
-                const tx = (this.tx || this.databaseConnection);
+                //TODO: check where expression contains all primary key of the table, 
+                //if contained, we can omit SELECT statement. 
+                //currently, I pray spanner's optimizer is so clever that it infers values of keys from where statement.
                 const whex = qb.whereExpression;
-                const query = `SELECT ${table.primaryColumns.map((c) => c.name).join(',')} FROM ${qb.mainTableName}${whex.length > 0 ? ` WHERE ${whex}` : ""}`;
-                const [keys,err] = tx.run(query);
+                const query = `SELECT ${table.primaryColumns.map((c) => c.name).join(',')} FROM ${qb.escapedMainTableName} ${whex}`;
+                const [keys,err] = await this.databaseConnection.run(query);
                 if (err) {
                     this.driver.connection.logger.logQueryError(err, query, [], this);
                     fail(new QueryFailedError(query, [], err));
                     return;
                 }
-                tx.deleteRows(qb.mainTableName, keys);
+                if (!keys || keys.length <= 0) {
+                    ok(); //nothing to delete
+                    return;
+                }
+                await this.request(table, 'deleteRows', keys);
                 ok();
             } catch (e) {
                 fail(e);
@@ -1473,7 +1595,9 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         if (!tableNames || !tableNames.length)
             return [];
 
-        return this.driver.loadTables(tableNames, this);
+        return this.connect().then(() => {
+            return this.driver.loadTables(tableNames);
+        });
     }
 
     /**
@@ -1642,9 +1766,12 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      */
     protected escapeTableName(target: Table|string, disableEscape?: boolean): string {
         const tableName = target instanceof Table ? target.name : target;
-        // use slice(1) to omit database name, because spanner raise error like 
-        // Expecting '(' but found an unknown character (".").
-        return tableName.split(".").map(i => disableEscape ? i : `\`${i}\``).slice(1).join(".");
+        let splits = tableName.split(".");
+        if (splits.length > 1) {
+            //omit database name to avoid spanner table name parse error.
+            splits = splits.slice(1);
+        }
+        return splits.map(i => disableEscape ? i : `\`${i}\``).join(".");
     }
     
     /**
@@ -1735,20 +1862,17 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         const qb = this.connection.manager
             .createQueryBuilder(this)
             .delete()
-            .where("table = :table, column = :column, type = :type", { 
-                table, column, type
-            });
+            .from(this.driver.options.schemaTableName || "schemas")
+            .where(`\`table\` = '${table}' AND \`column\` = '${column}' AND \`type\` = '${type}'`);
         return this.delete(qb);
     }
 
     protected async upsertExtendSchema(table: string, column: string, type: string, value: string): Promise<void> {
         const qb = this.connection.manager
             .createQueryBuilder(this)
-            .update()
+            .update(this.driver.options.schemaTableName || "schemas")
             .set({table, column, type, value})
-            .where("table = :table, column = :column, type = :type", { 
-                table, column, type
-            });
+            .where(`\`table\` = '${table}' AND \`column\` = '${column}' AND \`type\` = '${type}'`);
         return this.upsert(qb);
     }
 }

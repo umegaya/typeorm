@@ -117,6 +117,10 @@ export abstract class QueryBuilder<Entity> {
     }
 
     get mainTableName(): string {
+        return this.getMainTableName();
+    }
+
+    get escapedMainTableName(): string {
         return this.getTableName(this.getMainTableName());
     }
 

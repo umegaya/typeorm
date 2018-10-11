@@ -50,6 +50,12 @@ export class SpannerDriver implements Driver {
         databases: { [key:string]:SpannerDatabase };
     };
 
+    /**
+     * ddl parser to use mysql migrations as spanner ddl. 
+     * https://github.com/duartealexf/sql-ddl-to-json-schema
+     */
+    ddlParser: any;
+
 
     // -------------------------------------------------------------------------
     // Public Implemented Properties
@@ -234,17 +240,13 @@ export class SpannerDriver implements Driver {
      * load tables. cache them into this.spanner.databases too.
      * @param tableNames table names which need to load. 
      */
-    loadTables(tableNames: string[]|Table|string, queryRunner: SpannerQueryRunner): Promise<Table[]> {
+    loadTables(tableNames: string[]|Table|string, ignoreMissingExtendSchema?:boolean): Promise<Table[]> {
         if (typeof tableNames === 'string') {
             tableNames = [tableNames];
         } else if (tableNames instanceof Table) {
             tableNames = [tableNames.name];
         }
-        const tablesMap: { 
-            [dbname: string]: {
-                tables: { [tableName: string]: Table }
-            } 
-        } = this.spanner.databases;
+        const databases = this.spanner.databases;
         return Promise.all(tableNames.map(async (tableName: string) => {
             let [dbname, name] = tableName.split(".");
             if (!name) {
@@ -254,16 +256,24 @@ export class SpannerDriver implements Driver {
                 name = dbname;
                 dbname = this.spanner.active;
             }
-            if (Object.keys(tablesMap[dbname].tables).length === 0) {
-                const database = await this.createDatabase(dbname);
-                const schemas = await database.getSchema();
-                Object.assign(tablesMap[dbname], this.parseSchema(dbname, schemas, queryRunner));
+            if (!databases[dbname]) {
+                throw new Error(`database ${dbname} should be created before its loadTables called`);
             }
-            return tablesMap[dbname].tables[name];
+            if (Object.keys(databases[dbname].tables).length === 0) {
+                const database = databases[dbname].handle;
+                const schemas = await database.getSchema();
+                databases[dbname].tables = await this.parseSchema(dbname, schemas, ignoreMissingExtendSchema);
+            }
+            return databases[dbname].tables[name];
         }));
     }
     getDatabases(): string[] {
         return Object.keys(this.spanner.databases);
+    }
+    isSchemaTable(table: Table): boolean {
+        console.log('isSchemaTable:', (this.options.schemaTableName || "schemas"), table.name, 
+            (this.options.schemaTableName || "schemas") === table.name);
+        return (this.options.schemaTableName || "schemas") === table.name;
     }
 
     // -------------------------------------------------------------------------
@@ -286,9 +296,8 @@ export class SpannerDriver implements Driver {
                 active: this.options.database,
                 databases: {}
             };
-            return (async () => {
-                await this.createDatabase(this.options.database);
-            })();
+            //actual database creation done in createDatabase (called from SpannerQueryRunner)
+            return Promise.resolve();
         }
     }
 
@@ -652,6 +661,12 @@ export class SpannerDriver implements Driver {
     protected loadDependencies(): void {
         try {
             this.spannerLib = PlatformTools.load('@google-cloud/spanner');  // try to load first supported package
+            if (this.options.migrationDDLType) {
+                const parser = PlatformTools.load('sql-ddl-to-json-schema');
+                this.ddlParser = new parser(this.options.migrationDDLType);
+            } else {
+                this.ddlParser = undefined;
+            }
             /*
              * Some frameworks (such as Jest) may mess up Node's require cache and provide garbage for the 'mysql' module
              * if it was not installed. We check that the object we got actually contains something otherwise we treat
@@ -659,9 +674,11 @@ export class SpannerDriver implements Driver {
              *
              * @see https://github.com/typeorm/typeorm/issues/1373
              */
-            if (Object.keys(this.spannerLib).length === 0) {
-                throw new Error("'spanner' was found but it is empty.");
-            }
+            [this.spannerLib, this.ddlParser].map((lib) => {
+                if (lib && Object.keys(lib).length === 0) {
+                    throw new Error("dependency was found but it is empty.");
+                }
+            });
 
         } catch (e) {
             throw new DriverPackageNotInstalledError("Spanner", "@google-cloud/spanner");
@@ -723,12 +740,12 @@ export class SpannerDriver implements Driver {
      /**
      * parse output of database.getSchema to generate Table object
      */
-    protected async parseSchema(dbName: string, schemas: any, queryRunner: SpannerQueryRunner): Promise<{[tableName: string]: Table}> {
+    protected async parseSchema(dbName: string, schemas: any, ignoreMissingExtendSchema?:boolean): Promise<{[tableName: string]: Table}> {
+        console.log('parseSchema', schemas);
         const tableOptionsMap: {[tableName: string]: TableOptions} = {};
         let extendSchemas: SpannerExtendSchemas|null = this.spanner.databases[dbName].schemas;
-        if (!extendSchemas) {
-            extendSchemas = await queryRunner.createAndLoadSchemaTableIfNotExists(this.options.schemaTableName);
-            this.spanner.databases[dbName].schemas = extendSchemas;
+        if (!extendSchemas && !ignoreMissingExtendSchema) {
+            throw new Error("extendSchema not set up");
         }
         for (const stmt of schemas[0]) {
             // console.log('stmt', stmt);
@@ -757,7 +774,7 @@ export class SpannerDriver implements Driver {
                     throw new Error("invalid ddl column format:" + columnStmt);
                 }
                 const type = this.parseTypeName(cm[2]);
-                const extendSchema = extendSchemas[tableName][cm[1]] || {};
+                const extendSchema = ((((extendSchemas || {})[tableName]) || {})[cm[1]]) || {};
                 // check and store constraint with m[3]
                 columns.push({
                     name: cm[1],
@@ -777,12 +794,17 @@ export class SpannerDriver implements Driver {
             const foreignKeys: TableForeignKeyOptions[] = [];
             const uniques: TableUniqueOptions[] = [];
             // probably tweak required (need to see actual index/interleave statements format)
-            for (const idxStmt of indexStmts.split(',')) {
+            if (indexStmts == null) {
+                continue;
+            }
+            for (const idxStmt of (indexStmts.match(/(\w+[\w\s]+\([^)]+\)[^,]*)/g) || [])) {
+                // console.log('idxStmt', idxStmt);
                 // distinguish index and foreignKey. fk should contains INTERLEAVE
-                if (idxStmt.indexOf("INTERLEAVE") >= 0) {
+                if (idxStmt.indexOf("INTERLEAVE") == 0) {
                     // foreighkey
                     // idxStmt =~ INTERLEAVE IN PARENT ${this.escapeTableName(fk.referencedTableName)}
-                    idxStmt.replace(/INTERLEAVE\s+IN\s+PARENT\s+(\w+)\((\w+)\)/, (m) => {
+                    const im = idxStmt.match(/INTERLEAVE\s+IN\s+PARENT\s+(\w+)\s*\((\w+)\)/);
+                    if (im) {
                         foreignKeys.push({
                             name: tableName,
                             columnNames: [`${m[2]}_id`],
@@ -790,28 +812,29 @@ export class SpannerDriver implements Driver {
                             referencedColumnNames: [] // set afterwards (primary key column of referencedTable)
                         });
                         return m[0];
-                    });
-                } else if (idxStmt.indexOf("PRIMARY") >= 0) {
+                    }
+                } else if (idxStmt.indexOf("PRIMARY") == 0) {
                     // primary key
                     // idxStmt =~ PRIMARY KEY (${columns})
-                    idxStmt.replace(/PRIMARY\s+KEY\s+\((\w+)\)/g, (m) => {
-                        for (const primaryColumnName of m[1].split(',').map(e => e.trim())) {
+                    const pm = idxStmt.match(/PRIMARY\s+KEY\s*\(([^)]+)\)/);
+                    if (pm) {
+                        for (const primaryColumnName of pm[1].split(',').map(e => e.trim())) {
                             const options = columns.find(c => c.name == primaryColumnName);
                             if (options) {
                                 options.isPrimary = true;
                             }
                         }
-                        return m[0];
-                    });
+                    };
                 } else {
                     // index
                     // idxStmt =~ (UNIQUE|NULL_FILTERED) INDEX ${name} ON ${tableName}(${columns})
-                    idxStmt.replace(/(\w*)\s?INDEX\s+(\w+)\s+ON\s(\w+)\((\w+)\)(.*)/g, (m) => {
+                    const im = idxStmt.match(/(\w[\w\s]+?)\s+INDEX\s+(\w+)\s+ON\s+(\w+)\s*\(([^)]+)\)(.*)/);
+                    if (im) {
                         const tableIndexOptions = {
-                            name: m[2],
-                            columnNames: m[4].split(",").map(e => e.trim()),
-                            isUnique: m[1].indexOf("UNIQUE") >= 0,
-                            isSpatial: m[1].indexOf("NULL_FILTERED") >= 0
+                            name: im[2],
+                            columnNames: im[4].split(",").map(e => e.trim()),
+                            isUnique: im[1].indexOf("UNIQUE") >= 0,
+                            isSpatial: im[1].indexOf("NULL_FILTERED") >= 0
                         };
                         indices.push(tableIndexOptions);
                         if (tableIndexOptions.isUnique) {
@@ -819,15 +842,14 @@ export class SpannerDriver implements Driver {
                                 name: tableIndexOptions.name,
                                 columnNames: tableIndexOptions.columnNames
                             });
-                            for (const uniqueColumnName in tableIndexOptions.columnNames) {
+                            for (const uniqueColumnName of tableIndexOptions.columnNames) {
                                 const options = columns.find(c => c.name == uniqueColumnName);
                                 if (options) {
                                     options.isUnique = true;
                                 }
                             }
                         }
-                        return m[0];
-                    });
+                    }
                 }
             }
             tableOptionsMap[tableName] = {

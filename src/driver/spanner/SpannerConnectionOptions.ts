@@ -30,4 +30,8 @@ export interface SpannerConnectionOptions extends BaseConnectionOptions {
      */
     readonly schemaTableName?: string;
 
+    /**
+     * migration ddl type. if not specified, ddl should be pure spanner's one
+     */
+    readonly migrationDDLType?: "mysql";
 }
