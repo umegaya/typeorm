@@ -68,9 +68,10 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         if (!this.databaseConnection) {
             return (async () => {
                 this.databaseConnection = await this.driver.createDatabase();
-                await this.createAndLoadSchemaTableIfNotExists(
+                const extendSchemas = await this.createAndLoadSchemaTableIfNotExists(
                     this.driver.options.schemaTableName
                 );
+                this.driver.setExtendSchemas(this.databaseConnection, extendSchemas);
                 return this.databaseConnection;
             })();
         }
@@ -194,7 +195,8 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
             update: this.update,
             delete: this.delete
         };
-        return fmaps[qb.expressionMap.queryType](qb);
+        
+        return fmaps[qb.expressionMap.queryType].call(this, qb);
     }
 
     /**
@@ -258,7 +260,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      */
     async hasTable(tableOrName: Table|string): Promise<boolean> {
         return this.connect().then(async () => {
-            const table = await this.driver.loadTables(tableOrName, true);
+            const table = await this.driver.loadTables(tableOrName);
             return !!table[0];
         });
     }
@@ -268,7 +270,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      */
     async hasColumn(tableOrName: Table|string, column: TableColumn|string): Promise<boolean> {
         return this.connect().then(async () => {
-            const tables = await this.driver.loadTables(tableOrName, true);
+            const tables = await this.driver.loadTables(tableOrName);
             return !!tables[0].columns.find((c: TableColumn) => {
                 if (typeof column === 'string' && c.name == column) {
                     return true;
@@ -1263,11 +1265,20 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
             ));
         }
 
-        const rawObjects: ObjectLiteral[] = await this.connection.manager
+        const rawObjects: ObjectLiteral[] = (await this.connection.manager
             .createQueryBuilder(this)
             .select()
             .from(tableName, "")
-            .getRawMany();
+            .getRawMany())
+            .map((o) => {
+                const v: { [k:string]:any } = {}
+                for (const c of o) {
+                    v[c["name"]] = c["value"];
+                }
+                return v;
+            });
+
+        console.log('rawObjects', rawObjects);
 
         const schemas: SpannerExtendSchemas = {};
         for (const rawObject of rawObjects) {
@@ -1292,7 +1303,9 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
                     // we automatically process increment generation storategy as uuid. 
                     // because spanner strongly discourage auto increment column. 
                     // TODO: if there is request, implement auto increment somehow.
-                    console.warn("warn: column value generatorStorategy `increment` treated as `uuid` on spanner, due to performance reason.");
+                    if (table !== "migrations") {
+                        console.warn("warn: column value generatorStorategy `increment` treated as `uuid` on spanner, due to performance reason.");
+                    }
                     columnSchema.generator = RandomGenerator.uuid4;
                 }
             } else if (type === "default") {
@@ -1348,6 +1361,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      * Handle select query
      */
     protected select<Entity>(qb: QueryBuilder<Entity>): Promise<any> {
+        console.log('select', qb.getSql(), this.databaseConnection);
         if (!this.tx) {
             const [query, params] = qb.getQueryAndParameters();
             return this.databaseConnection.run({sql: query, params});

@@ -218,6 +218,15 @@ export class SpannerDriver implements Driver {
         }
         return Promise.resolve(this.spanner.databases[name].handle);
     }
+    setExtendSchemas(handle: any, extendSchemas: SpannerExtendSchemas) {
+        for (const name in this.spanner.databases) {
+            const db = this.spanner.databases[name];
+            if (db.handle === handle) {
+                this.updateTableWithExtendSchema(db, extendSchemas);
+                break;
+            }
+        }
+    }
     dropDatabase(name: string): Promise<any> {
         if (!this.spanner.databases[name]) {
             //TODO: just ignoring error maybe better.
@@ -240,7 +249,7 @@ export class SpannerDriver implements Driver {
      * load tables. cache them into this.spanner.databases too.
      * @param tableNames table names which need to load. 
      */
-    loadTables(tableNames: string[]|Table|string, ignoreMissingExtendSchema?:boolean): Promise<Table[]> {
+    loadTables(tableNames: string[]|Table|string): Promise<Table[]> {
         if (typeof tableNames === 'string') {
             tableNames = [tableNames];
         } else if (tableNames instanceof Table) {
@@ -262,7 +271,7 @@ export class SpannerDriver implements Driver {
             if (Object.keys(databases[dbname].tables).length === 0) {
                 const database = databases[dbname].handle;
                 const schemas = await database.getSchema();
-                databases[dbname].tables = await this.parseSchema(dbname, schemas, ignoreMissingExtendSchema);
+                databases[dbname].tables = await this.parseSchema(schemas);
             }
             return databases[dbname].tables[name];
         }));
@@ -271,8 +280,6 @@ export class SpannerDriver implements Driver {
         return Object.keys(this.spanner.databases);
     }
     isSchemaTable(table: Table): boolean {
-        console.log('isSchemaTable:', (this.options.schemaTableName || "schemas"), table.name, 
-            (this.options.schemaTableName || "schemas") === table.name);
         return (this.options.schemaTableName || "schemas") === table.name;
     }
 
@@ -740,13 +747,9 @@ export class SpannerDriver implements Driver {
      /**
      * parse output of database.getSchema to generate Table object
      */
-    protected async parseSchema(dbName: string, schemas: any, ignoreMissingExtendSchema?:boolean): Promise<{[tableName: string]: Table}> {
+    protected async parseSchema(schemas: any): Promise<{[tableName: string]: Table}> {
         console.log('parseSchema', schemas);
         const tableOptionsMap: {[tableName: string]: TableOptions} = {};
-        let extendSchemas: SpannerExtendSchemas|null = this.spanner.databases[dbName].schemas;
-        if (!extendSchemas && !ignoreMissingExtendSchema) {
-            throw new Error("extendSchema not set up");
-        }
         for (const stmt of schemas[0]) {
             // console.log('stmt', stmt);
             // stmt =~ /CREATE ${tableName} (IF NOT EXISTS) (${columns}) ${interleaves}/
@@ -774,19 +777,18 @@ export class SpannerDriver implements Driver {
                     throw new Error("invalid ddl column format:" + columnStmt);
                 }
                 const type = this.parseTypeName(cm[2]);
-                const extendSchema = ((((extendSchemas || {})[tableName]) || {})[cm[1]]) || {};
                 // check and store constraint with m[3]
                 columns.push({
                     name: cm[1],
                     type: type.typeName,
                     isNullable: cm[3].indexOf("NOT NULL") < 0,
-                    isGenerated: !!extendSchema.generator,
+                    isGenerated: false, // set in updateTableWithExtendSchema
                     isPrimary: false, // set afterwards
                     isUnique: false, // set afterwards
                     isArray: type.isArray,
                     length: type.length.toString(), 
-                    default: extendSchema.default,
-                    generationStrategy: extendSchema.generatorStorategy,
+                    default: undefined, // set in updateTableWithExtendSchema
+                    generationStrategy: undefined, // set in updateTableWithExtendSchema
                 });
             }
             // parse primary and interleave statements
@@ -864,8 +866,29 @@ export class SpannerDriver implements Driver {
         const result: { [tableName:string]: Table } = {};
         for (const tableName in tableOptionsMap) {
             result[tableName] = new Table(tableOptionsMap[tableName]);
-            console.log('table', tableName, result[tableName]);
         }
         return result;
+    }
+
+    protected updateTableWithExtendSchema(db: SpannerDatabase, extendSchemas: SpannerExtendSchemas) {
+        db.schemas = extendSchemas;
+        for (const tableName in db.tables) {
+            const table = db.tables[tableName];
+            const extendSchema = extendSchemas[tableName];
+            if (extendSchema) {
+                for (const columnName in extendSchema) {
+                    const columnSchema = extendSchema[columnName];
+                    const column = table.findColumnByName(columnName);
+                    if (column) {
+                        column.isGenerated = !!columnSchema.generator;
+                        column.default = columnSchema.default;
+                        column.generationStrategy = columnSchema.generatorStorategy;
+                    } else {
+                        throw new Error(`extendSchema for column ${columnName} exists but table does not have it`);
+                    }
+                }
+            }
+            console.log('table', tableName, table);
+        }
     }
 }
