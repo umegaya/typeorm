@@ -1600,8 +1600,10 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         if (!tableNames || !tableNames.length)
             return [];
 
-        return this.connect().then(() => {
-            return this.driver.loadTables(tableNames);
+        return this.connect().then(async () => {
+            const tables = await this.driver.loadTables(tableNames);
+            console.log('tables', tables);
+            return tables;
         });
     }
 

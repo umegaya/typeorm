@@ -147,6 +147,7 @@ export class RdbmsSchemaBuilder implements SchemaBuilder {
     protected async dropOldForeignKeys(): Promise<void> {
         await PromiseUtils.runInSequence(this.entityToSyncMetadatas, async metadata => {
 
+            console.log('loadedTables', this.queryRunner.loadedTables);
             const table = this.queryRunner.loadedTables.find(table => table.name === metadata.tablePath);
             if (!table)
                 return;
