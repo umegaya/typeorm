@@ -254,18 +254,22 @@ export class SpannerDriver implements Driver {
             tableNames = [tableNames.name];
         }
         const database = this.spanner.database;
-        return Promise.all(tableNames.map(async (tableName: string) => {
-            let [dbname, name] = tableName.split(".");
-            if (!name) {
-                name = dbname;
-            }
-            if (Object.keys(database.tables).length === 0) {
-                const handle = database.handle;
-                const schemas = await handle.getSchema();
-                database.tables = await this.parseSchema(schemas);
-            }
-            return database.tables[name];
-        }));
+        return (async () => {        
+            const tables = await Promise.all(tableNames.map(async (tableName: string) => {
+                let [dbname, name] = tableName.split(".");
+                if (!name) {
+                    name = dbname;
+                }
+                if (Object.keys(database.tables).length === 0) {
+                    const handle = database.handle;
+                    const schemas = await handle.getSchema();
+                    database.tables = await this.parseSchema(schemas);
+                }
+                console.log('name', name, database.tables);
+                return database.tables[name];
+            }));
+            return tables.filter((t) => !!t);
+        })();
     }
     getDatabases(): string[] {
         return Object.keys([this.options.database]);
