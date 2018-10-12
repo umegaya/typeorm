@@ -46,9 +46,8 @@ export class SpannerDriver implements Driver {
     spanner: {
         client: any;
         instance: any;
-        active?: string;
-        databases: { [key:string]:SpannerDatabase };
-    };
+        database: SpannerDatabase;
+    } | null;
 
     /**
      * ddl parser to use mysql migrations as spanner ddl. 
@@ -193,91 +192,83 @@ export class SpannerDriver implements Driver {
     // -------------------------------------------------------------------------
     // Public Methods (SpannerDriver specific)
     // -------------------------------------------------------------------------
-    createDatabase(name?: string): Promise<any> {
-        if (!name) {
-            if (this.spanner.active) {
-                name = this.spanner.active;
-            } else {
-                throw new Error(`no active database`);
+    /**
+     * returns spanner database object. used as databaseConnection of query runner.
+     */
+    async getDatabaseHandle(): Promise<any> {
+        if (!this.spanner) {
+            await this.connect();
+            if (!this.spanner) {
+                throw new Error('fail to reconnect');
             }
         }
-        if (!this.spanner.databases[name]) {
-            return (async () => {
-                const database = this.spanner.instance.database(name);
-                await database.get({autoCreate: true});
-                this.spanner.databases[name] = {
-                    handle: database,
-                    tables: {},
-                    schemas: null,
-                }
-                if (!this.spanner.active) {
-                    this.spanner.active = name;
-                }
-                return database;
-            })();
-        }
-        return Promise.resolve(this.spanner.databases[name].handle);
+        return this.spanner.database.handle;
     }
-    setExtendSchemas(handle: any, extendSchemas: SpannerExtendSchemas) {
-        for (const name in this.spanner.databases) {
-            const db = this.spanner.databases[name];
-            if (db.handle === handle) {
-                this.updateTableWithExtendSchema(db, extendSchemas);
-                break;
-            }
+    /**
+     * create and drop database of arbiter name. 
+     * if name equals this.options.database, change driver state accordingly
+     */
+    createDatabase(name: string): Promise<any> {
+        if (!this.spanner) {
+            throw new Error('connect() driver first');
         }
+        if (name == this.options.database) {
+            return Promise.resolve(this.spanner.database.handle);
+        }
+        return this.spanner.instance.database(name).get({autoCreate:true});
     }
-    dropDatabase(name: string): Promise<any> {
-        if (!this.spanner.databases[name]) {
-            //TODO: just ignoring error maybe better.
-            return Promise.reject(new Error(`database: ${name} does not exists`));
+    dropDatabase(name: string): Promise<void> {
+        if (!this.spanner) {
+            throw new Error('connect() driver first');
         }
-        return (async() => {
-            await this.spanner.databases[name].handle.delete();
-            delete this.spanner.databases[name];
-            if (this.spanner.active == name) {
-                const ks = Object.keys(this.spanner.databases);
-                if (ks.length > 0) {
-                    this.spanner.active = ks[0];
-                } else {
-                    this.spanner.active = "";
-                }
-            }
-        })();
+        if (name == this.options.database) {
+            return this.spanner.database.handle.delete.then(() => {
+                this.disconnect();
+            });
+        }
+        return this.spanner.instance.database(name).delete();
+    }
+    /**
+     * set tables object cache. 
+     */
+    setTable(table: Table) {
+        if (!this.spanner) {
+            throw new Error('connect() driver first');
+        }
+        this.spanner.database.tables[table.name] = table;
+        // for (const tableName in this.spanner.database.tables) {
+        //     console.log('setTable', tableName, table);
+        // }        
     }
     /**
      * load tables. cache them into this.spanner.databases too.
      * @param tableNames table names which need to load. 
      */
     loadTables(tableNames: string[]|Table|string): Promise<Table[]> {
+        if (!this.spanner) {
+            throw new Error('connect() driver first');
+        }
         if (typeof tableNames === 'string') {
             tableNames = [tableNames];
         } else if (tableNames instanceof Table) {
             tableNames = [tableNames.name];
         }
-        const databases = this.spanner.databases;
+        const database = this.spanner.database;
         return Promise.all(tableNames.map(async (tableName: string) => {
             let [dbname, name] = tableName.split(".");
             if (!name) {
-                if (!this.spanner.active) {
-                    throw new Error(`table name does not contain database name and no active database exists`);
-                }
                 name = dbname;
-                dbname = this.spanner.active;
             }
-            if (!databases[dbname]) {
-                throw new Error(`database ${dbname} should be created before its loadTables called`);
+            if (Object.keys(database.tables).length === 0) {
+                const handle = database.handle;
+                const schemas = await handle.getSchema();
+                database.tables = await this.parseSchema(schemas);
             }
-            if (Object.keys(databases[dbname].tables).length === 0) {
-                const database = databases[dbname].handle;
-                const schemas = await database.getSchema();
-                databases[dbname].tables = await this.parseSchema(schemas);
-            }
-            return databases[dbname].tables[name];
+            return database.tables[name];
         }));
     }
     getDatabases(): string[] {
-        return Object.keys(this.spanner.databases);
+        return Object.keys([this.options.database]);
     }
     isSchemaTable(table: Table): boolean {
         return (this.options.schemaTableName || "schemas") === table.name;
@@ -291,17 +282,22 @@ export class SpannerDriver implements Driver {
      * Performs connection to the database.
      */
     async connect(): Promise<void> {
-        if (!this.spanner || !this.spanner.client) {
+        if (!this.spanner) {
 			const Spanner = this.spannerLib.Spanner;
             // create objects
             const client = new Spanner({
                 projectId: this.options.projectId,
             });
             const instance = client.instance(this.options.instanceId);
+            const database = instance.database(this.options.database);
+            await database.get({autoCreate: true});
             this.spanner = {
                 client, instance,
-                active: this.options.database,
-                databases: {}
+                database: {
+                    handle: database,
+                    tables: {},
+                    schemas: null,
+                }
             };
             //actual database creation done in createDatabase (called from SpannerQueryRunner)
             return Promise.resolve();
@@ -312,19 +308,23 @@ export class SpannerDriver implements Driver {
      * Makes any action after connection (e.g. create extensions in Postgres driver).
      */
     afterConnect(): Promise<void> {
-        return Promise.resolve();
+        return (async () => {
+            if (!this.spanner) {
+                throw new Error('connect() driver first');
+            }
+            const queryRunner = this.createQueryRunner("master");
+            const extendSchemas = await queryRunner.createAndLoadSchemaTableIfNotExists(
+                this.options.schemaTableName
+            );
+            this.updateTableWithExtendSchema(this.spanner.database, extendSchemas);
+        })();
     }
 
     /**
      * Closes connection with the database.
      */
     async disconnect(): Promise<void> {
-        this.spanner = {
-            client: false,
-            instance: false,
-            active: undefined,
-            databases: {},
-        };
+        this.spanner = null;
     }
 
     /**
@@ -561,10 +561,10 @@ export class SpannerDriver implements Driver {
      * If replication is not setup then returns default connection's database connection.
      */
     obtainMasterConnection(): Promise<any> {
-        if (!this.spanner.active) {
+        if (!this.spanner) {
             throw new Error(`no active database`);
         }
-        return Promise.resolve(this.spanner.databases[this.spanner.active].handle);
+        return Promise.resolve(this.spanner.database.handle);
     }
 
     /**
@@ -888,7 +888,7 @@ export class SpannerDriver implements Driver {
                     }
                 }
             }
-            console.log('table', tableName, table);
+            // console.log('table', tableName, table);
         }
     }
 }

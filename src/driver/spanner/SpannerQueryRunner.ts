@@ -67,12 +67,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
     connect(): Promise<any> {
         if (!this.databaseConnection) {
             return (async () => {
-                this.databaseConnection = await this.driver.createDatabase();
-                const extendSchemas = await this.createAndLoadSchemaTableIfNotExists(
-                    this.driver.options.schemaTableName
-                );
-                this.driver.setExtendSchemas(this.databaseConnection, extendSchemas);
-                return this.databaseConnection;
+                this.databaseConnection = await this.driver.getDatabaseHandle();
             })();
         }
         return Promise.resolve(this.databaseConnection);
@@ -94,18 +89,12 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
             throw new TransactionAlreadyStartedError();
 
         this.isTransactionActive = true;
-        this.tx = await this.databaseConnection.getTransaction({
-            //TODO: set properly with isolationLevel
-            //readOnly: true,
-            strong: !!isolationLevel
+        return this.connect().then(async (db) => {
+            this.tx = await this.databaseConnection.getTransaction({
+                //readOnly: true,
+                strong: !!isolationLevel
+            });
         });
-    }
-
-    async ensureStartTransaction(isolationLevel?: IsolationLevel): Promise<any> {
-        if (!this.tx) {
-            await this.startTransaction(isolationLevel);
-        }
-        return Promise.resolve(this.tx);
     }
 
     /**
@@ -117,10 +106,12 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
             throw new TransactionNotStartedError();
 
         await new Promise((res, rej) => this.tx.commit((err: Error) => {
-            this.isTransactionActive = false;
-            this.tx = null;
             if (err) { rej(err); }
-            else { res(); }
+            else { 
+                this.tx = null;
+                this.isTransactionActive = false;
+                res(); 
+            }
         }));
     }
 
@@ -133,10 +124,12 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
             throw new TransactionNotStartedError();
 
         await new Promise((res, rej) => this.tx.rollback((err: Error) => {
-            this.isTransactionActive = false;
-            this.tx = null;
             if (err) { rej(err); }
-            else { res(); }
+            else { 
+                this.tx = null;
+                this.isTransactionActive = false;
+                res(); 
+            }
         }));
     }
 
@@ -158,11 +151,11 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         return new Promise(async (ok, fail) => {
             try {
                 await this.connect();
-                const tx = this.tx ? this.tx : this.databaseConnection;
+                const db = this.databaseConnection;
                 const [params, types] = this.generateQueryParameterAndTypes(parameters);
                 this.driver.connection.logger.logQuery(query, parameters, this);
                 const queryStartTime = +new Date();
-                tx.run({sql: query, params, types}, (err: any, result: any) => {
+                db.run({sql: query, params, types}, (err: any, result: any) => {
 
                     // log slow queries if maxQueryExecution time is set
                     const maxQueryExecutionTime = this.driver.connection.options.maxQueryExecutionTime;
@@ -186,7 +179,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
     }
 
     /**
-     * execute query but call from XXXQueryBuilder
+     * execute query. call from XXXQueryBuilder
      */
     queryByBuilder<Entity>(qb: QueryBuilder<Entity>): Promise<any> {
         const fmaps: { [key:string]:(qb:QueryBuilder<Entity>) => Promise<any>} = {
@@ -209,10 +202,10 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         return new Promise(async (ok, fail) => {
             try {
                 await this.connect();
-                const tx = this.tx ? this.tx : this.databaseConnection;
+                const db = this.databaseConnection;
                 const [params, types] = this.generateQueryParameterAndTypes(parameters);
                 this.driver.connection.logger.logQuery(query, parameters, this);
-                const stream = tx.runStream({sql: query, params, types});
+                const stream = db.runStream({sql: query, params, types});
                 if (onEnd) stream.on("end", onEnd);
                 if (onError) stream.on("error", onError);
                 ok(stream);
@@ -344,13 +337,12 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         await this.executeQueries(upQueries, downQueries);
 
         if (!this.driver.isSchemaTable(table)) {
-            console.log('sync ext schemas', table.name);
             // if table creation success, sync schema table
             await Promise.all(table.columns.map(c => { return this.syncExtendSchema(table, c) }));
         }
 
         // set table to driver
-
+        this.driver.setTable(table);
 
     }
 
@@ -1183,7 +1175,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      * Note: this operation uses SQL's TRUNCATE query which cannot be reverted in transactions.
      */
     async clearTable(tableOrName: Table|string): Promise<void> {
-        throw new Error(`NYI: spanner: clearTable`);
+        throw new Error(`TODO: spanner: clearTable`);
         //await this.query(`TRUNCATE TABLE ${this.escapeTableName(tableOrName)}`);
     }
 
@@ -1193,7 +1185,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      * (because it can clear all your database).
      */
     async clearDatabase(database?: string): Promise<void> {
-        throw new Error(`NYI: spanner: clearDatabase`);
+        throw new Error(`TODO: spanner: clearDatabase`);
         /*const dbName = database ? database : this.driver.database;
         if (dbName) {
             const isDatabaseExist = await this.hasDatabase(dbName);
@@ -1278,8 +1270,6 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
                 return v;
             });
 
-        console.log('rawObjects', rawObjects);
-
         const schemas: SpannerExtendSchemas = {};
         for (const rawObject of rawObjects) {
             const table = rawObject["table"];
@@ -1348,6 +1338,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
 
     /**
      * wrapper to integrate request by transaction and table
+     * connect() should be already called before this function invoked.
      */
     protected request(table: Table, method: string, ...args: any[]): Promise<any> {
         if (this.tx) {
