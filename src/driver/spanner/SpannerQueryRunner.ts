@@ -85,15 +85,16 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      * Starts transaction on the current connection.
      */
     async startTransaction(isolationLevel?: IsolationLevel): Promise<void> {
+        console.log('startTransaction');
         if (this.isTransactionActive)
             throw new TransactionAlreadyStartedError();
 
         this.isTransactionActive = true;
         return this.connect().then(async (db) => {
-            this.tx = await this.databaseConnection.getTransaction({
+            this.tx = (await this.databaseConnection.getTransaction({
                 //readOnly: true,
                 strong: !!isolationLevel
-            });
+            }))[0];
         });
     }
 
@@ -101,11 +102,12 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      * Commits transaction.
      * Error will be thrown if transaction was not started.
      */
-    async commitTransaction(): Promise<void> {
+    commitTransaction(): Promise<void> {
+        console.log('commitTransaction');
         if (!this.isTransactionActive)
             throw new TransactionNotStartedError();
 
-        await new Promise((res, rej) => this.tx.commit((err: Error) => {
+        return new Promise((res, rej) => this.tx.commit((err: Error) => {
             if (err) { rej(err); }
             else { 
                 this.tx = null;
