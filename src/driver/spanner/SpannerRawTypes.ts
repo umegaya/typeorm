@@ -1,12 +1,14 @@
 import {Table} from "../../schema-builder/table/Table";
 
+export interface SpannerExtendColumnSchema {
+    default?: any;
+    generatorStorategy?: "uuid"|"increment";
+    generator?: () => any;
+}
+
 export interface SpannerExtendSchemas {
     [table: string]: {
-        [column: string]: {
-            default?: any;
-            generatorStorategy?: "uuid"|"increment";
-            generator?: () => any;
-        }
+        [column: string]: SpannerExtendColumnSchema;
     }
 }
 export interface SpannerDatabase {

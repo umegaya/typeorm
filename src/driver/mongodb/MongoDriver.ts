@@ -194,6 +194,10 @@ export class MongoDriver implements Driver {
         return Promise.resolve();
     }
 
+    afterSynchronize(): Promise<void> {
+        return Promise.resolve();
+    }
+
     /**
      * Closes connection with the database.
      */

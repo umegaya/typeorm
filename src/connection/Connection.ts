@@ -205,6 +205,9 @@ export class Connection {
             if (this.options.migrationsRun)
                 await this.runMigrations();
 
+            if (this.options.dropSchema || this.options.synchronize || this.options.migrationsRun)
+                await this.driver.afterSynchronize();
+
         } catch (error) {
 
             // if for some reason build metadata fail (for example validation error during entity metadata check)

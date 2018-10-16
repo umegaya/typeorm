@@ -201,6 +201,13 @@ export abstract class AbstractSqliteDriver implements Driver {
     }
 
     /**
+     * Makes any action after any synchronization happens (e.g. sync extend schema table in Spanner driver)
+     */
+    afterSynchronize(): Promise<void> {
+        return Promise.resolve();
+    }
+
+    /**
      * Closes connection with database.
      */
     async disconnect(): Promise<void> {

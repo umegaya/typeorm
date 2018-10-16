@@ -7,7 +7,7 @@ import {TableForeignKey} from "../../schema-builder/table/TableForeignKey";
 import {TableIndex} from "../../schema-builder/table/TableIndex";
 import {QueryRunnerAlreadyReleasedError} from "../../error/QueryRunnerAlreadyReleasedError";
 import {SpannerDriver, SpannerColumnUpdateWithCommitTimestamp} from "./SpannerDriver";
-import {SpannerExtendSchemas} from "./SpannerRawTypes";
+import {SpannerExtendSchemas, SpannerExtendColumnSchema} from "./SpannerRawTypes";
 import {ReadStream} from "../../platform/PlatformTools";
 import {RandomGenerator} from "../../util/RandomGenerator";
 import {QueryFailedError} from "../../error/QueryFailedError";
@@ -254,6 +254,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
     async hasTable(tableOrName: Table|string): Promise<boolean> {
         return this.connect().then(async () => {
             const table = await this.driver.loadTables(tableOrName);
+            console.log('hasTable', tableOrName, !!table[0]);
             return !!table[0];
         });
     }
@@ -319,15 +320,34 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         const downQueries: string[] = [];
 
         console.log('createTable name=', table.name);
+        // create table sql
         upQueries.push(this.createTableSql(table, createForeignKeys));
         downQueries.push(this.dropTableSql(table));
+
+        // create indexes. unique constraint will be integrated with unique index.
+        if (table.uniques.length > 0) {
+            table.uniques.forEach(unique => {
+                const uniqueExist = table.indices.some(index => index.name === unique.name);
+                if (!uniqueExist) {
+                    table.indices.push(new TableIndex({
+                        name: unique.name,
+                        columnNames: unique.columnNames,
+                        isUnique: true
+                    }));
+                }
+            });
+        }
+
+        if (table.indices.length > 0) {
+            table.indices.forEach(index => {
+                upQueries.push(this.createIndexSql(table, index));
+                downQueries.push(this.dropIndexSql(table, index));
+            });
+        }
 
         // we must first drop indices, than drop foreign keys, because drop queries runs in reversed order
         // and foreign keys will be dropped first as indices. This order is very important, because we can't drop index
         // if it related to the foreign key.
-
-        // createTable does not need separate method to create indices, because it create indices in the same query with table creation.
-        table.indices.forEach(index => downQueries.push(this.dropIndexSql(table, index)));
 
         // if createForeignKeys is true, we must drop created foreign keys in down query.
         // createTable does not need separate method to create foreign keys, because it create fk's in the same query with table creation.
@@ -336,14 +356,69 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
 
         await this.executeQueries(upQueries, downQueries);
 
-        if (!this.driver.isSchemaTable(table)) {
-            // if table creation success, sync schema table
-            await Promise.all(table.columns.map(c => { return this.syncExtendSchema(table, c) }));
-        }
+        // super.replaceCachedTable will be ignored because new table should not be loaded before.
+        this.replaceCachedTable(table, table);
 
-        // set table to driver
-        this.driver.setTable(table);
+    }
 
+    async syncExtendSchemas(tables: { [k:string]:Table }): Promise<SpannerExtendSchemas> {
+        //specify true, to update `tables` to latest schema definition automatically
+        const allSchemaObjects: { [k:string]:ObjectLiteral[] } = {};
+        const raw = await this.loadExtendSchemaTable(
+            this.driver.getSchemaTableName()
+        );
+        raw.forEach((o) => {
+            const t = o["table"];
+            if (!allSchemaObjects[t]) {
+                allSchemaObjects[t] = [];
+            }
+            allSchemaObjects[t].push(o);
+        });
+        const newExtendSchemas: SpannerExtendSchemas = {};
+        await Promise.all(Object.keys(tables).map(async (k) => {
+            const t = tables[k];
+            const promises: Promise<void[]>[] = [];
+            const schemaObjectsByTable = allSchemaObjects[t.name] || [];
+            for (const c of t.columns) {
+                const { add, remove } = this.getSyncExtendSchemaObjects(t, c);
+                const addFiltered = add.filter((e) => {
+                    // filter element which already added
+                    return !schemaObjectsByTable.find(
+                        (o) => o["column"] == e.column && 
+                            o["type"] == e.type &&
+                            o["value"] == e.value
+                    );
+                });
+                const removeFiltered = remove.filter((e) => {
+                    // filter element which does not exist
+                    return schemaObjectsByTable.find(
+                        (o) => o["column"] == e.column && 
+                            o["type"] == e.type
+                    );
+                });
+                if ((addFiltered.length + removeFiltered.length) > 0) {
+                    console.log('update schemas', 'add', addFiltered, 'rem', removeFiltered);
+                    promises.push(Promise.all([
+                        ...addFiltered.map((e) => this.upsertExtendSchema(e.table, e.column, e.type, e.value)),
+                        ...removeFiltered.map((e) => this.deleteExtendSchema(e.table, e.column, e.type))
+                    ]));
+                }
+                if (add.length > 0) {
+                    if (!newExtendSchemas[t.name]) {
+                        newExtendSchemas[t.name] = {}
+                    }
+                    for (const a of add) {
+                        newExtendSchemas[t.name][c.name] = this.createExtendSchemaObject(
+                            a.table, a.type, a.value       
+                        );
+                    }
+                }
+            }
+            if (promises.length > 0) {
+                await Promise.all(promises);
+            }
+        }));
+        return newExtendSchemas;
     }
 
     /**
@@ -521,7 +596,6 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         }
 
         await this.executeQueries(upQueries, downQueries);
-        await this.syncExtendSchema(table, column);
 
         clonedTable.addColumn(column);
         this.replaceCachedTable(table, clonedTable);
@@ -642,7 +716,6 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         }
 
         await this.executeQueries(upQueries, downQueries);
-        await this.syncExtendSchema(table, newColumn);
         this.replaceCachedTable(table, clonedTable);
 
 
@@ -908,7 +981,6 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         downQueries.push(`ALTER TABLE ${this.escapeTableName(table)} ADD ${this.buildCreateColumnSql(column, true)}`);
 
         await this.executeQueries(upQueries, downQueries);
-        await this.syncExtendSchema(table, column, true);
 
         clonedTable.removeColumn(column);
         this.replaceCachedTable(table, clonedTable);
@@ -1175,8 +1247,10 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      * Note: this operation uses SQL's TRUNCATE query which cannot be reverted in transactions.
      */
     async clearTable(tableOrName: Table|string): Promise<void> {
-        throw new Error(`TODO: spanner: clearTable`);
-        //await this.query(`TRUNCATE TABLE ${this.escapeTableName(tableOrName)}`);
+        if (tableOrName instanceof Table) {
+            tableOrName = tableOrName.name;
+        }
+        return this.driver.dropTable(tableOrName);
     }
 
     /**
@@ -1185,7 +1259,13 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      * (because it can clear all your database).
      */
     async clearDatabase(database?: string): Promise<void> {
-        throw new Error(`TODO: spanner: clearDatabase`);
+        console.log('clearDatabase start');
+        const tables = await this.driver.getAllTables(true);
+        await Promise.all(Object.keys(tables).map(async (k) => {
+            console.log('clearDatabase', k);
+            return this.driver.dropTable(k);                
+        }));
+        console.log('clearDatabase finish');
         /*const dbName = database ? database : this.driver.database;
         if (dbName) {
             const isDatabaseExist = await this.hasDatabase(dbName);
@@ -1221,10 +1301,15 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      * generated column's increment strategy or default value
      * @database: spanner's database object. 
      */
-    async createAndLoadSchemaTableIfNotExists(tableName?: string): Promise<SpannerExtendSchemas> {
-        tableName = tableName || "schemas";
+    async createAndLoadSchemaTable(tableName?: string, ifNotExists?:boolean): Promise<SpannerExtendSchemas|null> {
+        console.log('createAndLoadSchemaTable start');
+        tableName = this.driver.getSchemaTableName();
         const tableExist = await this.hasTable(tableName); // todo: table name should be configurable
         if (!tableExist) {
+            if (!ifNotExists) {
+                console.log('createAndLoadSchemaTable null');
+                return null;
+            }
             await this.createTable(new Table(
                 {
                     name: tableName,
@@ -1257,18 +1342,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
             ));
         }
 
-        const rawObjects: ObjectLiteral[] = (await this.connection.manager
-            .createQueryBuilder(this)
-            .select()
-            .from(tableName, "")
-            .getRawMany())
-            .map((o) => {
-                const v: { [k:string]:any } = {}
-                for (const c of o) {
-                    v[c["name"]] = c["value"];
-                }
-                return v;
-            });
+        const rawObjects: ObjectLiteral[] = await this.loadExtendSchemaTable(tableName);
 
         const schemas: SpannerExtendSchemas = {};
         for (const rawObject of rawObjects) {
@@ -1278,39 +1352,69 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
             }
             const tableSchemas = schemas[table];
             const column = rawObject["column"];
-            if (!tableSchemas[column]) {
-                tableSchemas[column] = {}
-            }
-            const columnSchema = tableSchemas[column];
-            const type = rawObject["type"];
-            if (type === "generator") {
-                const value = rawObject["value"];
-                if (value == "uuid") {
-                    columnSchema.generatorStorategy = "uuid";
-                    columnSchema.generator = RandomGenerator.uuid4;
-                } else if (value == "increment") {
-                    columnSchema.generatorStorategy = "increment";
-                    // we automatically process increment generation storategy as uuid. 
-                    // because spanner strongly discourage auto increment column. 
-                    // TODO: if there is request, implement auto increment somehow.
-                    if (table !== "migrations") {
-                        console.warn("warn: column value generatorStorategy `increment` treated as `uuid` on spanner, due to performance reason.");
-                    }
-                    columnSchema.generator = RandomGenerator.uuid4;
-                }
-            } else if (type === "default") {
-                const value = rawObject["value"];
-                columnSchema.default = value;
-                columnSchema.generator = () => { return value; }
-
-            }
+            tableSchemas[column] = this.createExtendSchemaObject(
+                table, rawObject["type"], rawObject["value"]);
         }
+        console.log('createAndLoadSchemaTable finish');
         return schemas;
     }
 
     // -------------------------------------------------------------------------
     // Protected Methods
     // -------------------------------------------------------------------------
+
+    /**
+     * helper for createAndLoadSchemaTable. 
+     * create schema object from schemas table column
+     * @param type
+     * @param value 
+     */
+    protected createExtendSchemaObject(
+        table: string, type: string, value: string
+    ): SpannerExtendColumnSchema {
+        const columnSchema: SpannerExtendColumnSchema = {};
+        if (type === "generator") {
+            if (value == "uuid") {
+                columnSchema.generatorStorategy = "uuid";
+                columnSchema.generator = RandomGenerator.uuid4;
+            } else if (value == "increment") {
+                columnSchema.generatorStorategy = "increment";
+                // we automatically process increment generation storategy as uuid. 
+                // because spanner strongly discourage auto increment column. 
+                // TODO: if there is request, implement auto increment somehow.
+                if (table !== "migrations") {
+                    console.warn("warn: column value generatorStorategy `increment` treated as `uuid` on spanner, due to performance reason.");
+                }
+                columnSchema.generator = RandomGenerator.uuid4;
+            }
+
+        } else if (type === "default") {
+            columnSchema.default = value;
+            columnSchema.generator = () => { return value; }
+
+        }
+
+        return columnSchema;
+    }
+
+    /**
+     * helper for createAndLoadSchemaTable. 
+     * load formatted object from schema table
+     */
+    protected async loadExtendSchemaTable(tableName: string): Promise<ObjectLiteral[]> {
+        const raw = await this.connection.manager
+            .createQueryBuilder(this)
+            .select()
+            .from(tableName, "")
+            .getRawMany();
+        return raw.map((o) => {
+            const v: { [k:string]:any } = {}
+            for (const c of o) {
+                v[c["name"]] = c["value"];
+            }
+            return v;
+        });
+    }
 
     /**
      * check whether entity has all primary column key
@@ -1602,7 +1706,6 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
 
         return this.connect().then(async () => {
             const tables = await this.driver.loadTables(tableNames);
-            console.log('tables', tables);
             return tables;
         });
     }
@@ -1632,40 +1735,6 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
                         isUnique: true
                     }));
             });
-
-        // as MySql does not have unique constraints, we must create table indices from table uniques and mark them as unique.
-        if (table.uniques.length > 0) {
-            table.uniques.forEach(unique => {
-                const uniqueExist = table.indices.some(index => index.name === unique.name);
-                if (!uniqueExist) {
-                    table.indices.push(new TableIndex({
-                        name: unique.name,
-                        columnNames: unique.columnNames,
-                        isUnique: true
-                    }));
-                }
-            });
-        }
-
-        if (table.indices.length > 0) {
-            const indicesSql = table.indices.map(index => {
-                const columnNames = index.columnNames.map(columnName => `\`${columnName}\``).join(", ");
-                if (!index.name)
-                    index.name = this.connection.namingStrategy.indexName(table.name, index.columnNames, index.where);
-
-                let indexType = "";
-                if (index.isUnique)
-                    indexType += "UNIQUE ";
-                if (index.isSpatial)
-                    indexType += "NULL_FILTERED ";
-                if (index.isFulltext)
-                    throw new Error(`NYI: spanner: index.isFulltext`); //indexType += "FULLTEXT ";
-
-                return `${indexType}INDEX \`${index.name}\` (${columnNames})`;
-            }).join(", ");
-
-            sql += `, ${indicesSql}`;
-        }
 
         sql += `)`;
 
@@ -1850,19 +1919,38 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         return "";
     }
 
-    protected async syncExtendSchema(table: Table, column: TableColumn, remove?: boolean): Promise<void> {
-        const promises: Promise<void>[] = [];
-        if (!remove && column.default) {
-            promises.push(this.upsertExtendSchema(table.name, column.name, "default", column.default));
+    protected replaceCachedTable(table: Table, changedTable: Table): void {
+        super.replaceCachedTable(table, changedTable);
+        this.driver.setTable(changedTable);
+    }
+
+    protected getSyncExtendSchemaObjects(table: Table, column: TableColumn): {
+        add: {table:string, column:string, type: string, value: string}[],
+        remove: {table:string, column:string, type: string}[]
+    } {
+        const ret = {
+            add: <{table:string, column:string, type: string, value: string}[]>[],
+            remove: <{table:string, column:string, type: string}[]>[]
+        };
+        if (column.default) {
+            ret.add.push({table: table.name, column: column.name, type: "default", value: column.default});
         } else {
-            promises.push(this.deleteExtendSchema(table.name, column.name, "default"));
+            ret.remove.push({table: table.name, column: column.name, type: "default"});
         }
-        if (!remove && column.generationStrategy) {
-            promises.push(this.upsertExtendSchema(table.name, column.name, "generator", column.generationStrategy))
+        if (column.generationStrategy) {
+            ret.add.push({table: table.name, column: column.name, type: "generator", value: column.generationStrategy});
         } else {
-            promises.push(this.deleteExtendSchema(table.name, column.name, "generator"));
+            ret.remove.push({table: table.name, column: column.name, type: "generator"});
         }
-        await Promise.all(promises);
+        return ret;
+    }
+
+    protected async syncExtendSchema(table: Table, column: TableColumn): Promise<void> {
+        const { add, remove } = this.getSyncExtendSchemaObjects(table, column);
+        await Promise.all([
+            ...add.map((e) => this.upsertExtendSchema(e.table, e.column, e.type, e.value)),
+            ...remove.map((e) => this.deleteExtendSchema(e.table, e.column, e.type))
+        ]);
     }
 
     protected async deleteExtendSchema(table: string, column: string, type: string): Promise<void> {
