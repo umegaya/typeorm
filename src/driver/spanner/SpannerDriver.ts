@@ -204,6 +204,31 @@ export class SpannerDriver implements Driver {
         }
         return this.spanner.database.handle;
     }
+    async getAllTables(force?:boolean): Promise<{[name:string]:Table}> {
+        if (!this.spanner) {
+            throw new Error('connect() driver first');
+        }
+        if (force) {
+            this.spanner.database.tables = {}
+        }
+        await this.loadTables(this.getSchemaTableName());
+        if (force) {
+            const queryRunner = this.createQueryRunner("master");
+            const extendSchemas = await queryRunner.createAndLoadSchemaTable(
+                this.getSchemaTableName()
+            );
+            if (extendSchemas) {
+                this.updateTableWithExtendSchema(this.spanner.database, extendSchemas);
+            }
+        }
+        return this.spanner.database.tables;
+    }
+    getExtendSchemas(): SpannerExtendSchemas {
+        if (!this.spanner) {
+            throw new Error('connect() driver first');
+        }
+        return this.spanner.database.schemas || {};
+    }
     /**
      * create and drop database of arbiter name. 
      * if name equals this.options.database, change driver state accordingly
@@ -236,9 +261,34 @@ export class SpannerDriver implements Driver {
             throw new Error('connect() driver first');
         }
         this.spanner.database.tables[table.name] = table;
-        // for (const tableName in this.spanner.database.tables) {
-        //     console.log('setTable', tableName, table);
-        // }        
+    }
+    async dropTable(tableName: string): Promise<void> {
+        if (!this.spanner) {
+            throw new Error('connect() driver first');
+        }
+        const t = this.spanner.database.tables[tableName];
+        if (t) {
+            console.log('start delete table', tableName);
+            await this.spanner.database.handle.table(tableName)
+            .delete()
+            .then((data: any) => {
+                console.log('start waiting remove table');
+                // need to wait until table deletion
+                return data[0].promise();
+            })
+            .then(() => {
+                if (this.spanner) {
+                    console.log('remove table');
+                    delete this.spanner.database.tables[tableName];
+                    if (this.getSchemaTableName() == tableName) {
+                        this.spanner.database.schemas = null;
+                    }
+                }        
+            });
+            console.log('end delete table', tableName);
+        } else {
+            console.log('dropTable', tableName, 'not exists');
+        }
     }
     /**
      * load tables. cache them into this.spanner.databases too.
@@ -265,7 +315,6 @@ export class SpannerDriver implements Driver {
                     const schemas = await handle.getSchema();
                     database.tables = await this.parseSchema(schemas);
                 }
-                console.log('name', name, database.tables);
                 return database.tables[name];
             }));
             return tables.filter((t) => !!t);
@@ -275,7 +324,10 @@ export class SpannerDriver implements Driver {
         return Object.keys([this.options.database]);
     }
     isSchemaTable(table: Table): boolean {
-        return (this.options.schemaTableName || "schemas") === table.name;
+        return this.getSchemaTableName() === table.name;
+    }
+    getSchemaTableName(): string {
+        return this.options.schemaTableName || "schemas";
     }
 
     // -------------------------------------------------------------------------
@@ -310,17 +362,33 @@ export class SpannerDriver implements Driver {
 
     /**
      * Makes any action after connection (e.g. create extensions in Postgres driver).
+     * here update extend schema. 
      */
     afterConnect(): Promise<void> {
+        return Promise.resolve();
+    }
+
+    /**
+     * Makes any action after any synchronization happens (e.g. sync extend schema table in Spanner driver)
+     */
+    afterSynchronize(): Promise<void> {
         return (async () => {
             if (!this.spanner) {
                 throw new Error('connect() driver first');
             }
             const queryRunner = this.createQueryRunner("master");
-            const extendSchemas = await queryRunner.createAndLoadSchemaTableIfNotExists(
-                this.options.schemaTableName
+            const extendSchemas = await queryRunner.createAndLoadSchemaTable(
+                this.getSchemaTableName(), true
             );
-            this.updateTableWithExtendSchema(this.spanner.database, extendSchemas);
+            if (extendSchemas) {
+                this.updateTableWithExtendSchema(this.spanner.database, extendSchemas);
+            }
+            
+            const newExtendSchemas = await queryRunner.syncExtendSchemas(this.spanner.database.tables);
+            this.updateTableWithExtendSchema(this.spanner.database, newExtendSchemas);
+            // for (const tableName in this.spanner.database.tables) {
+            //      console.log('setTable', tableName, this.spanner.database.tables[tableName]);
+            // }
         })();
     }
 
@@ -543,19 +611,22 @@ export class SpannerDriver implements Driver {
         if (this.getColumnLength(column)) {
             type += `(${this.getColumnLength(column)})`;
 
-        } else if (column.width) {
+        } else if ((<string[]>this.withWidthColumnTypes).indexOf(type) >= 0 && column.width) {
             type += `(${column.width})`;
 
-        } else if (column.precision !== null && column.precision !== undefined && column.scale !== null && column.scale !== undefined) {
-            type += `(${column.precision},${column.scale})`;
+        } else if ((<string[]>this.withPrecisionColumnTypes).indexOf(type) >= 0) {
+            if (column.precision !== null && column.precision !== undefined && column.scale !== null && column.scale !== undefined) {
+                type += `(${column.precision},${column.scale})`;
 
-        } else if (column.precision !== null && column.precision !== undefined) {
-            type += `(${column.precision})`;
+            } else if (column.precision !== null && column.precision !== undefined) {
+                type += `(${column.precision})`;
+            }
         }
 
         if (column.isArray)
             type = `Array<${type}>`;
 
+        //console.log('createFullType', type, column);
         return type;
     }
 

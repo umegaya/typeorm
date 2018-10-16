@@ -338,6 +338,13 @@ export class MysqlDriver implements Driver {
     }
 
     /**
+     * Makes any action after any synchronization happens (e.g. sync extend schema table in Spanner driver)
+     */
+    afterSynchronize(): Promise<void> {
+        return Promise.resolve();
+    }
+
+    /**
      * Closes connection with the database.
      */
     async disconnect(): Promise<void> {
