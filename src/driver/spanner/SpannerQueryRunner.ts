@@ -311,58 +311,8 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
     }
 
     /**
-     * Creates a new table. aka 'schema' on spanner
+     * Synchronizes table extend schema.
      */
-    async createTable(table: Table, ifNotExist: boolean = false, createForeignKeys: boolean = true): Promise<void> {
-        if (ifNotExist) {
-            const isTableExist = await this.hasTable(table);
-            if (isTableExist) return Promise.resolve();
-        }
-        const upQueries: string[] = [];
-        const downQueries: string[] = [];
-
-        console.log('createTable name=', table.name);
-        // create table sql
-        upQueries.push(this.createTableSql(table, createForeignKeys));
-        downQueries.push(this.dropTableSql(table));
-
-        // create indexes. unique constraint will be integrated with unique index.
-        if (table.uniques.length > 0) {
-            table.uniques.forEach(unique => {
-                const uniqueExist = table.indices.some(index => index.name === unique.name);
-                if (!uniqueExist) {
-                    table.indices.push(new TableIndex({
-                        name: unique.name,
-                        columnNames: unique.columnNames,
-                        isUnique: true
-                    }));
-                }
-            });
-        }
-
-        if (table.indices.length > 0) {
-            table.indices.forEach(index => {
-                upQueries.push(this.createIndexSql(table, index));
-                downQueries.push(this.dropIndexSql(table, index));
-            });
-        }
-
-        // we must first drop indices, than drop foreign keys, because drop queries runs in reversed order
-        // and foreign keys will be dropped first as indices. This order is very important, because we can't drop index
-        // if it related to the foreign key.
-
-        // if createForeignKeys is true, we must drop created foreign keys in down query.
-        // createTable does not need separate method to create foreign keys, because it create fk's in the same query with table creation.
-        if (createForeignKeys)
-            table.foreignKeys.forEach(foreignKey => downQueries.push(this.dropForeignKeySql(table, foreignKey)));
-
-        await this.executeQueries(upQueries, downQueries);
-
-        // super.replaceCachedTable will be ignored because new table should not be loaded before.
-        this.replaceCachedTable(table, table);
-
-    }
-
     async syncExtendSchemas(tables: { [k:string]:Table }): Promise<SpannerExtendSchemas> {
         //specify true, to update `tables` to latest schema definition automatically
         const allSchemaObjects: { [k:string]:ObjectLiteral[] } = {};
@@ -424,7 +374,59 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
     }
 
     /**
+     * Creates a new table. aka 'schema' on spanner
+     * note that foreign key always dropped regardless the value of createForeignKeys. 
+     * because our foreignkey analogue is achieved by interleaved table
+     */
+    async createTable(table: Table, ifNotExist: boolean = false, createForeignKeys: boolean = true): Promise<void> {
+        if (ifNotExist) {
+            const isTableExist = await this.hasTable(table);
+            if (isTableExist) return Promise.resolve();
+        }
+        const upQueries: string[] = [];
+        const downQueries: string[] = [];
+
+        console.log('createTable name=', table.name);
+        // create table sql.
+        upQueries.push(this.createTableSql(table));
+        downQueries.push(this.dropTableSql(table));
+
+        // create indexes. unique constraint will be integrated with unique index.
+        if (table.uniques.length > 0) {
+            table.uniques.forEach(unique => {
+                const uniqueExist = table.indices.some(index => index.name === unique.name);
+                if (!uniqueExist) {
+                    table.indices.push(new TableIndex({
+                        name: unique.name,
+                        columnNames: unique.columnNames,
+                        isUnique: true
+                    }));
+                }
+            });
+        }
+
+        if (table.indices.length > 0) {
+            table.indices.forEach(index => {
+                upQueries.push(this.createIndexSql(table, index));
+                downQueries.push(this.dropIndexSql(table, index));
+            });
+        }
+
+        // we don't drop foreign key itself. because its created with table 
+        // if (createForeignKeys)
+        // table.foreignKeys.forEach(foreignKey => downQueries.push(this.dropForeignKeySql(table, foreignKey)));
+
+        await this.executeQueries(upQueries, downQueries);
+
+        // super.replaceCachedTable will be ignored because new table should not be loaded before.
+        this.replaceCachedTable(table, table);
+
+    }
+
+    /**
      * Drop the table.
+     * note that foreign key always dropped regardless the value of dropForeignKeys. 
+     * because our foreignkey analogue is achieved by interleaved table
      */
     async dropTable(target: Table|string, ifExist?: boolean, dropForeignKeys: boolean = true): Promise<void> {
         // It needs because if table does not exist and dropForeignKeys or dropIndices is true, we don't need
@@ -435,21 +437,29 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         }
 
         // if dropTable called with dropForeignKeys = true, we must create foreign keys in down query.
-        const createForeignKeys: boolean = dropForeignKeys;
+        // const createForeignKeys: boolean = dropForeignKeys;
         const tableName = target instanceof Table ? target.name : target;
         const table = await this.getCachedTable(tableName);
         const upQueries: string[] = [];
         const downQueries: string[] = [];
 
-        if (dropForeignKeys)
-            table.foreignKeys.forEach(foreignKey => upQueries.push(this.dropForeignKeySql(table, foreignKey)));
+        // if (dropForeignKeys)
+        // table.foreignKeys.forEach(foreignKey => upQueries.push(this.dropForeignKeySql(table, foreignKey)));
 
-        table.indices.forEach(index => upQueries.push(this.dropIndexSql(table, index)));
+        if (table.indices.length > 0) {
+            table.indices.forEach(index => {
+                upQueries.push(this.dropIndexSql(table, index))
+                downQueries.push(this.createIndexSql(table, index))
+            });
+        }
 
         upQueries.push(this.dropTableSql(table));
-        downQueries.push(this.createTableSql(table, createForeignKeys));
+        downQueries.push(this.createTableSql(table));
 
         await this.executeQueries(upQueries, downQueries);
+
+        // remove table from cache
+        this.replaceCachedTable(table, null);
     }
 
     /**
@@ -1170,8 +1180,9 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      * Creates a new foreign keys.
      */
     async createForeignKeys(tableOrName: Table|string, foreignKeys: TableForeignKey[]): Promise<void> {
-        const promises = foreignKeys.map(foreignKey => this.createForeignKey(tableOrName, foreignKey));
-        await Promise.all(promises);
+        // in spanner, we achieve foreign key analogue with interleaved table.
+        // const promises = foreignKeys.map(foreignKey => this.createForeignKey(tableOrName, foreignKey));
+        // await Promise.all(promises);
     }
 
     /**
@@ -1252,7 +1263,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         if (tableOrName instanceof Table) {
             tableOrName = tableOrName.name;
         }
-        return this.driver.dropTable(tableOrName);
+        return this.dropTable(tableOrName);
     }
 
     /**
@@ -1265,7 +1276,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         const tables = await this.driver.getAllTables(true);
         await Promise.all(Object.keys(tables).map(async (k) => {
             console.log('clearDatabase', k);
-            return this.driver.dropTable(k);                
+            return this.dropTable(k);                
         }));
         console.log('clearDatabase finish');
         /*const dbName = database ? database : this.driver.database;
@@ -1641,6 +1652,12 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
             }
         });
     }
+    /**
+     * unescape table/database name
+     */
+    protected unescapeName(name: string): string {
+        return name.replace(/`([^`]+)`/, "$1");
+    }
 
     /**
      * Handle administrative sqls as spanner API call
@@ -1650,7 +1667,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
             if (type == "CREATE") {
                 const p = m[2].split(/\s/);
                 if (p[0] == "DATABASE") {
-                    let name = p[1];
+                    let name = this.unescapeName(p[1]);
                     if (p[1] == "IF") {
                         if (p[2] != "NOT") {
                             return Promise.reject(new Error(`invalid query ${m[0]}`));
@@ -1663,7 +1680,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
             } else if (type == "DROP") {
                 const p = m[2].split(/\s/);
                 if (p[0] == "DATABASE") {
-                    let name = p[1];
+                    let name = this.unescapeName(p[1]);
                     if (p[1] == "IF") {
                         if (p[2] != "EXISTS") {
                             return Promise.reject(new Error(`invalid query ${m[0]}`));
@@ -1672,6 +1689,9 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
                         }
                     }
                     return this.driver.dropDatabase(name);
+                } else if (p[0] == "TABLE") {
+                    let name = this.unescapeName(p[1]);
+                    return this.driver.dropTable(name);
                 }
             }
             //others all updateSchema
@@ -1715,7 +1735,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
     /**
      * Builds create table sql
      */
-    protected createTableSql(table: Table, createForeignKeys?: boolean): string {
+    protected createTableSql(table: Table): string {
         const columnDefinitions = table.columns.map(column => this.buildCreateColumnSql(column, true)).join(", ");
         let sql = `CREATE TABLE ${this.escapeTableName(table)} (${columnDefinitions}`;
 
@@ -1745,7 +1765,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
             sql += ` PRIMARY KEY (${columnNames})`;
         }
 
-        if (table.foreignKeys.length > 0 && createForeignKeys) {
+        if (table.foreignKeys.length > 0) {
             const foreignKeysSql = table.foreignKeys.map(fk => {
                 let constraint = `INTERLEAVE IN PARENT ${this.escapeTableName(fk.referencedTableName)}`;
                 if (fk.onDelete)
@@ -1769,6 +1789,21 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         return `DROP TABLE ${this.escapeTableName(tableOrName)}`;
     }
 
+    protected async dropTableSqlRecursive(tableOrName: Table|string, upQueries: string[], downQueries: string[]): Promise<void> {
+        if (typeof tableOrName == 'string') {
+            const table = await this.getTable(tableOrName);
+            if (!table) {
+                return; // already deleted
+            }
+            tableOrName = table;
+        }
+        await Promise.all(tableOrName.foreignKeys.map((fk) => {
+            this.dropTableSqlRecursive(fk.referencedTableName, upQueries, downQueries);
+        }))
+        upQueries.push(this.dropTableSql(tableOrName));
+        downQueries.push(this.createTableSql(tableOrName));
+    }
+
     /**
      * Builds create index sql.
      */
@@ -1790,7 +1825,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      */
     protected dropIndexSql(table: Table, indexOrName: TableIndex|string): string {
         let indexName = indexOrName instanceof TableIndex ? indexOrName.name : indexOrName;
-        return `DROP INDEX \`${indexName}\` ON ${this.escapeTableName(table)}`;
+        return `DROP INDEX \`${indexName}\``;
     }
 
     /**
@@ -1812,23 +1847,28 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      * Builds create foreign key sql.
      */
     protected createForeignKeySql(table: Table, foreignKey: TableForeignKey): string {
-        const referencedColumnNames = foreignKey.referencedColumnNames.map(column => `\`${column}\``).join(",");
-        const fkName = foreignKey.name || `${foreignKey.referencedColumnNames}By${foreignKey.columnNames.join()}`;
-        let sql = `CREATE INDEX ${fkName}\(${foreignKey.columnNames.join(',')}\) ON ${this.escapeTableName(table.name)}\(${referencedColumnNames}\) INTERLEAVE IN ${this.escapeTableName(foreignKey.referencedTableName)}`;
+        throw new Error('NYI: spanner: column level foreign key declaration');
+        /* const referencedColumnNames = foreignKey.referencedColumnNames.map(column => `\`${column}\``).join(",");
+        const columnNames = foreignKey.columnNames.map(column => `\`${column}\``).join(",");
+        const fkName = foreignKey.name || `${referencedColumnNames}By${foreignKey.columnNames.join()}`;
+        let sql = `CREATE INDEX ${fkName} ON
+            ${this.escapeTableName(table.name)}\(${referencedColumnNames}, ${columnNames}\) 
+            INTERLEAVE IN ${this.escapeTableName(foreignKey.referencedTableName)}`;
         if (foreignKey.onDelete)
             sql += ` ON DELETE ${foreignKey.onDelete}`;
         if (foreignKey.onUpdate)
             throw new Error(`NYI: spanner: foreignKey.onUpdate`); //sql += ` ON UPDATE ${foreignKey.onUpdate}`;
 
-        return sql;
+        return sql; */
     }
 
     /**
      * Builds drop foreign key sql.
      */
     protected dropForeignKeySql(table: Table, foreignKeyOrName: TableForeignKey|string): string {
-        const foreignKeyName = foreignKeyOrName instanceof TableForeignKey ? foreignKeyOrName.name : foreignKeyOrName;
-        return `DROP INDEX \`${foreignKeyName}\` ON ${this.escapeTableName(table)}`;
+        throw new Error('NYI: spanner: column level foreign key declaration');
+        /* const foreignKeyName = foreignKeyOrName instanceof TableForeignKey ? foreignKeyOrName.name : foreignKeyOrName;
+        return `DROP INDEX \`${foreignKeyName}\` ON ${this.escapeTableName(table)}`; */
     }
 
     protected parseTableName(target: Table|string) {
@@ -1921,9 +1961,16 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         return "";
     }
 
-    protected replaceCachedTable(table: Table, changedTable: Table): void {
-        super.replaceCachedTable(table, changedTable);
-        this.driver.setTable(changedTable);
+    protected replaceCachedTable(table: Table, changedTable: Table|null): void {
+        if (changedTable) {
+            super.replaceCachedTable(table, changedTable);
+            this.driver.setTable(changedTable);
+        } else {
+            const index = this.loadedTables.findIndex((t) => t.name == table.name);
+            if (index >= 0) {
+                this.loadedTables.splice(index, 1);
+            }
+        }
     }
 
     protected getSyncExtendSchemaObjects(table: Table, column: TableColumn): {

@@ -221,6 +221,7 @@ export class SpannerDriver implements Driver {
                 this.updateTableWithExtendSchema(this.spanner.database, extendSchemas);
             }
         }
+        console.log('spanner tables', this.spanner.database.tables);
         return this.spanner.database.tables;
     }
     getExtendSchemas(): SpannerExtendSchemas {
@@ -272,7 +273,7 @@ export class SpannerDriver implements Driver {
             await this.spanner.database.handle.table(tableName)
             .delete()
             .then((data: any) => {
-                console.log('start waiting remove table');
+                console.log('start waiting remove table', tableName);
                 // need to wait until table deletion
                 return data[0].promise();
             })
@@ -287,7 +288,7 @@ export class SpannerDriver implements Driver {
             });
             console.log('end delete table', tableName);
         } else {
-            console.log('dropTable', tableName, 'not exists');
+            console.log('dropTable', `[${tableName}]`, 'not exists', this.spanner.database.tables[tableName], this.spanner.database.tables);
         }
     }
     /**
@@ -834,20 +835,70 @@ export class SpannerDriver implements Driver {
                 timestamp TIMESTAMP NOT NULL,
                 name STRING(255) NOT NULL,
             ) PRIMARY KEY(id)
+
+            CREATE INDEX IDX_908fdaa14b12b506f5c2371001 ON Item(ownerId, item_id)
+
             in below regex, ,(?=\s*\)) is matched `,\n)` just before PRIMARY KEY
             */
-            const m = stmt.match(/\s*CREATE\s+TABLE\s+(\w+)\s?[^\(]*\(([\s\S]*?),(?=\s*\))\s*\)([\s\S]*)/);
+
+           // variable for storing parse results
+           const indices: TableIndexOptions[] = [];
+           const foreignKeys: TableForeignKeyOptions[] = [];
+           const uniques: TableUniqueOptions[] = [];
+           const columns: TableColumnOptions[] = [];
+
+           const m = stmt.match(/\s*CREATE\s+TABLE\s+(\w+)\s?[^\(]*\(([\s\S]*?),(?=\s*\))\s*\)([\s\S]*)/);
             if (!m) {
-                throw new Error("invalid ddl format:" + stmt);
+                // idxStmt =~ CREATE (UNIQUE|NULL_FILTERED) INDEX ${name} ON ${tableName}(${columns}) (INTERLEAVE IN ${parentTableName})
+                const im = stmt.match(/(\w[\w\s]+?)\s+INDEX\s+(\w+)\s+ON\s+(\w+)\s*\(([^)]+)\)(.*)/);
+                if (im) {
+                    if (im[5] && im[5].indexOf("INTERLEAVE") >= 0) {
+                        // interleaved index. this seems to be same as `partially interleaved table`.
+                        // we use interleaved table for relation, difficult to use this feature
+                        // because no way to specify interleaved table from @Index annotation.
+                        // one hack is use where property of IndexOptions to specify table name.
+                        throw new Error('TODO: spanner: interleaved index support');
+                    } else {
+                        // normal index
+                        const tableIndexOptions = {
+                            name: im[2],
+                            columnNames: im[4].split(",").map((e: string) => e.trim()),
+                            isUnique: im[1].indexOf("UNIQUE") >= 0,
+                            isSpatial: im[1].indexOf("NULL_FILTERED") >= 0
+                        };
+                        indices.push(tableIndexOptions);
+                        if (tableIndexOptions.isUnique) {
+                            uniques.push({
+                                name: tableIndexOptions.name,
+                                columnNames: tableIndexOptions.columnNames
+                            });
+                            for (const uniqueColumnName of tableIndexOptions.columnNames) {
+                                const options = columns.find(c => c.name == uniqueColumnName);
+                                if (options) {
+                                    options.isUnique = true;
+                                }
+                            }
+                        }
+                        const tableOptions = tableOptionsMap[im[3]];
+                        if (tableOptions) {
+                            if (!tableOptions.indices) {
+                                tableOptions.indices = [];
+                            }
+                            tableOptions.indices.push(tableIndexOptions);
+                        }
+                    }
+                    continue;
+                } else {
+                    throw new Error("invalid ddl format:" + stmt);
+                }
             }
             const tableName: string = m[1]; 
             const columnStmts: string = m[2];
             const indexStmts: string = m[3];
             // parse columns
-            const columns: TableColumnOptions[] = [];
             for (const columnStmt of columnStmts.split(',')) {
                 // console.log('columnStmt', `[${columnStmt}]`);
-                const cm = columnStmt.match(/(\w+)\s+([\w\(\)]+)\s+([^\n]*)/);
+                const cm = columnStmt.match(/(\w+)\s+([\w\(\)]+)\s*([^\n]*)/);
                 if (!cm) {
                     throw new Error("invalid ddl column format:" + columnStmt);
                 }
@@ -867,9 +918,6 @@ export class SpannerDriver implements Driver {
                 });
             }
             // parse primary and interleave statements
-            const indices: TableIndexOptions[] = [];
-            const foreignKeys: TableForeignKeyOptions[] = [];
-            const uniques: TableUniqueOptions[] = [];
             // probably tweak required (need to see actual index/interleave statements format)
             if (indexStmts == null) {
                 continue;
@@ -888,7 +936,8 @@ export class SpannerDriver implements Driver {
                             referencedTableName: m[2],
                             referencedColumnNames: [] // set afterwards (primary key column of referencedTable)
                         });
-                        return m[0];
+                    } else {
+                        throw new Error("invalid ddl interleave format:" + idxStmt);
                     }
                 } else if (idxStmt.indexOf("PRIMARY") == 0) {
                     // primary key
@@ -901,31 +950,8 @@ export class SpannerDriver implements Driver {
                                 options.isPrimary = true;
                             }
                         }
-                    };
-                } else {
-                    // index
-                    // idxStmt =~ (UNIQUE|NULL_FILTERED) INDEX ${name} ON ${tableName}(${columns})
-                    const im = idxStmt.match(/(\w[\w\s]+?)\s+INDEX\s+(\w+)\s+ON\s+(\w+)\s*\(([^)]+)\)(.*)/);
-                    if (im) {
-                        const tableIndexOptions = {
-                            name: im[2],
-                            columnNames: im[4].split(",").map(e => e.trim()),
-                            isUnique: im[1].indexOf("UNIQUE") >= 0,
-                            isSpatial: im[1].indexOf("NULL_FILTERED") >= 0
-                        };
-                        indices.push(tableIndexOptions);
-                        if (tableIndexOptions.isUnique) {
-                            uniques.push({
-                                name: tableIndexOptions.name,
-                                columnNames: tableIndexOptions.columnNames
-                            });
-                            for (const uniqueColumnName of tableIndexOptions.columnNames) {
-                                const options = columns.find(c => c.name == uniqueColumnName);
-                                if (options) {
-                                    options.isUnique = true;
-                                }
-                            }
-                        }
+                    } else {
+                        throw new Error("invalid ddl pkey format:" + idxStmt);
                     }
                 }
             }
