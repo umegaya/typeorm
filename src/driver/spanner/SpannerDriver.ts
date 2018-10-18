@@ -21,6 +21,7 @@ import {SpannerDatabase, SpannerExtendSchemas} from "./SpannerRawTypes";
 import {Table} from "../../schema-builder/table/Table";
 import {ObjectLiteral} from "../../common/ObjectLiteral";
 import {DataTypeNotSupportedError} from "../../error/DataTypeNotSupportedError";
+//import { filter } from "minimatch";
 
 
 export const SpannerColumnUpdateWithCommitTimestamp = "commit_timestamp";
@@ -168,12 +169,7 @@ export class SpannerDriver implements Driver {
      */
     dataTypeDefaults: DataTypeDefaults = {
         "string": { length: 255 },
-        "timestamp": { width: 20 },
-        "date": { width: 10 },
-        "bool": { width: 1 },
         "bytes": { length: 255 },
-        "float64": { precision: 22 },
-        "int64": { width: 20 }
     };
 
     // -------------------------------------------------------------------------
@@ -221,7 +217,6 @@ export class SpannerDriver implements Driver {
                 this.updateTableWithExtendSchema(this.spanner.database, extendSchemas);
             }
         }
-        console.log('spanner tables', this.spanner.database.tables);
         return this.spanner.database.tables;
     }
     getExtendSchemas(): SpannerExtendSchemas {
@@ -366,7 +361,18 @@ export class SpannerDriver implements Driver {
      * here update extend schema. 
      */
     afterConnect(): Promise<void> {
-        return Promise.resolve();
+        return (async () => {
+            if (!this.spanner) {
+                throw new Error('connect() driver first');
+            }
+            const queryRunner = this.createQueryRunner("master");
+            const extendSchemas = await queryRunner.createAndLoadSchemaTable(
+                this.getSchemaTableName()
+            );
+            if (extendSchemas) {
+                this.updateTableWithExtendSchema(this.spanner.database, extendSchemas);
+            }
+        })();
     }
 
     /**
@@ -388,7 +394,7 @@ export class SpannerDriver implements Driver {
             const newExtendSchemas = await queryRunner.syncExtendSchemas(this.spanner.database.tables);
             this.updateTableWithExtendSchema(this.spanner.database, newExtendSchemas);
             // for (const tableName in this.spanner.database.tables) {
-            //      console.log('setTable', tableName, this.spanner.database.tables[tableName]);
+            // console.log('setTable', tableName, this.spanner.database.tables[tableName]);
             // }
         })();
     }
@@ -667,37 +673,57 @@ export class SpannerDriver implements Driver {
      * and returns only changed.
      */
     findChangedColumns(tableColumns: TableColumn[], columnMetadatas: ColumnMetadata[]): ColumnMetadata[] {
-        return columnMetadatas.filter(columnMetadata => {
+        //console.log('columns', tableColumns);
+        const filtered = columnMetadatas.filter(columnMetadata => {
             const tableColumn = tableColumns.find(c => c.name === columnMetadata.databaseName);
             if (!tableColumn)
                 return false; // we don't need new columns, we only need exist and changed
 
-            // console.log("table:", columnMetadata.entityMetadata.tableName);
-            // console.log("name:", tableColumn.name, columnMetadata.databaseName);
-            // console.log("type:", tableColumn.type, this.normalizeType(columnMetadata));
-            // console.log("length:", tableColumn.length, columnMetadata.length);
-            // console.log("width:", tableColumn.width, columnMetadata.width);
-            // console.log("precision:", tableColumn.precision, columnMetadata.precision);
-            // console.log("scale:", tableColumn.scale, columnMetadata.scale);
-            // console.log("zerofill:", tableColumn.zerofill, columnMetadata.zerofill);
-            // console.log("unsigned:", tableColumn.unsigned, columnMetadata.unsigned);
-            // console.log("asExpression:", tableColumn.asExpression, columnMetadata.asExpression);
-            // console.log("generatedType:", tableColumn.generatedType, columnMetadata.generatedType);
-            // console.log("comment:", tableColumn.comment, columnMetadata.comment);
-            // console.log("default:", tableColumn.default, columnMetadata.default);
-            // console.log("default changed:", !this.compareDefaultValues(this.normalizeDefault(columnMetadata), tableColumn.default));
-            // console.log("onUpdate:", tableColumn.onUpdate, columnMetadata.onUpdate);
-            // console.log("isPrimary:", tableColumn.isPrimary, columnMetadata.isPrimary);
-            // console.log("isNullable:", tableColumn.isNullable, columnMetadata.isNullable);
-            // console.log("isUnique:", tableColumn.isUnique, this.normalizeIsUnique(columnMetadata));
-            // console.log("isGenerated:", tableColumn.isGenerated, columnMetadata.isGenerated);
-            // console.log("==========================================");
+            /* console.log("changed property ==========================================");
+            console.log("table.column:", columnMetadata.entityMetadata.tableName, columnMetadata.databaseName);
+            if (tableColumn.name !== columnMetadata.databaseName)
+                console.log("name:", tableColumn.name, columnMetadata.databaseName);
+            if (tableColumn.type.toLowerCase() !== this.normalizeType(columnMetadata).toLowerCase())
+                console.log("type:", tableColumn.type.toLowerCase(), this.normalizeType(columnMetadata).toLowerCase());
+            if (tableColumn.length !== columnMetadata.length)
+               console.log("length:", tableColumn.length, columnMetadata.length.toString());
+            if (tableColumn.width !== columnMetadata.width)
+               console.log("width:", tableColumn.width, columnMetadata.width);
+            // if (tableColumn.precision !== columnMetadata.precision)
+               // console.log("precision:", tableColumn.precision, columnMetadata.precision);
+            if (tableColumn.scale !== columnMetadata.scale)
+               console.log("scale:", tableColumn.scale, columnMetadata.scale);
+            if (tableColumn.zerofill !== columnMetadata.zerofill)
+               console.log("zerofill:", tableColumn.zerofill, columnMetadata.zerofill);
+            if (tableColumn.unsigned !== columnMetadata.unsigned)
+               console.log("unsigned:", tableColumn.unsigned, columnMetadata.unsigned);
+            if (tableColumn.asExpression !== columnMetadata.asExpression)
+               console.log("asExpression:", tableColumn.asExpression, columnMetadata.asExpression);
+            if (tableColumn.generatedType !== columnMetadata.generatedType)
+               console.log("generatedType:", tableColumn.generatedType, columnMetadata.generatedType);
+            // if (tableColumn.comment !== columnMetadata.comment)
+               // console.log("comment:", tableColumn.comment, columnMetadata.comment);
+            if (tableColumn.default !== columnMetadata.default)
+               console.log("default:", tableColumn.default, columnMetadata.default);
+            if (!this.compareDefaultValues(this.normalizeDefault(columnMetadata), tableColumn.default))
+               console.log("default changed:", !this.compareDefaultValues(this.normalizeDefault(columnMetadata), tableColumn.default));
+            if (tableColumn.onUpdate !== columnMetadata.onUpdate)
+               console.log("onUpdate:", tableColumn.onUpdate, columnMetadata.onUpdate);
+            if (tableColumn.isPrimary !== columnMetadata.isPrimary)
+               console.log("isPrimary:", tableColumn.isPrimary, columnMetadata.isPrimary);
+            if (tableColumn.isNullable !== columnMetadata.isNullable)
+               console.log("isNullable:", tableColumn.isNullable, columnMetadata.isNullable);
+            if (tableColumn.isUnique !== this.normalizeIsUnique(columnMetadata))
+               console.log("isUnique:", tableColumn.isUnique, this.normalizeIsUnique(columnMetadata));
+            if (tableColumn.isGenerated !== columnMetadata.isGenerated)
+               console.log("isGenerated:", tableColumn.isGenerated, columnMetadata.isGenerated);
+            console.log("=========================================="); */
 
             return tableColumn.name !== columnMetadata.databaseName
-                || tableColumn.type !== this.normalizeType(columnMetadata)
+                || tableColumn.type.toLowerCase() !== this.normalizeType(columnMetadata).toLowerCase() 
                 || tableColumn.length !== columnMetadata.length
                 || tableColumn.width !== columnMetadata.width
-                || tableColumn.precision !== columnMetadata.precision
+                // || tableColumn.precision !== columnMetadata.precision : spanner has no precision specifier
                 || tableColumn.scale !== columnMetadata.scale
                 || tableColumn.zerofill !== columnMetadata.zerofill
                 || tableColumn.unsigned !== columnMetadata.unsigned
@@ -711,6 +737,9 @@ export class SpannerDriver implements Driver {
                 || tableColumn.isUnique !== this.normalizeIsUnique(columnMetadata)
                 || (columnMetadata.generationStrategy !== "uuid" && tableColumn.isGenerated !== columnMetadata.isGenerated);
         });
+
+        //console.log('filtered', filtered);
+        return filtered;
     }
 
     /**
@@ -783,26 +812,22 @@ export class SpannerDriver implements Driver {
     }
 
     /**
-     * 
-     */
-    protected linkOptions(optionsMap: {[tableName: string]: TableOptions} ) {
-
-    }
-
-    /**
      * parse typename and return additional information required by TableColumn object.
      */
     protected parseTypeName(typeName: string): {
         typeName: string;
         isArray: boolean;
-        length: number;
+        length?: string;
     } {
+        typeName = typeName.toLowerCase();
         const tm = typeName.match(/([^\(]+)\((\d+)\)/);
         if (tm) {
+            const typeDefault = this.dataTypeDefaults[tm[1]];
             return {
                 typeName: tm[1],
                 isArray: false,
-                length: Number(tm[2])
+                length: typeDefault && typeDefault.length && 
+                    tm[2] == typeDefault.length.toString() ? undefined : tm[2]
             };
         } 
         const am = typeName.match(/([^<]+)<(\w+)>/);
@@ -810,13 +835,11 @@ export class SpannerDriver implements Driver {
             return {
                 typeName,
                 isArray: true,
-                length: 1
             }
         }
         return {
             typeName,
             isArray: false,
-            length: 1
         }
     }
 
@@ -852,6 +875,7 @@ export class SpannerDriver implements Driver {
                 // idxStmt =~ CREATE (UNIQUE|NULL_FILTERED) INDEX ${name} ON ${tableName}(${columns}) (INTERLEAVE IN ${parentTableName})
                 const im = stmt.match(/(\w[\w\s]+?)\s+INDEX\s+(\w+)\s+ON\s+(\w+)\s*\(([^)]+)\)(.*)/);
                 if (im) {
+                    //console.log('process as index', im);
                     if (im[5] && im[5].indexOf("INTERLEAVE") >= 0) {
                         // interleaved index. this seems to be same as `partially interleaved table`.
                         // we use interleaved table for relation, difficult to use this feature
@@ -864,27 +888,32 @@ export class SpannerDriver implements Driver {
                             name: im[2],
                             columnNames: im[4].split(",").map((e: string) => e.trim()),
                             isUnique: im[1].indexOf("UNIQUE") >= 0,
-                            isSpatial: im[1].indexOf("NULL_FILTERED") >= 0
+                            isSpatial: im[1].indexOf("NULL_FILTERED") >= 0,
+                            isFulltext: false
                         };
-                        indices.push(tableIndexOptions);
-                        if (tableIndexOptions.isUnique) {
-                            uniques.push({
-                                name: tableIndexOptions.name,
-                                columnNames: tableIndexOptions.columnNames
-                            });
-                            for (const uniqueColumnName of tableIndexOptions.columnNames) {
-                                const options = columns.find(c => c.name == uniqueColumnName);
-                                if (options) {
-                                    options.isUnique = true;
-                                }
-                            }
-                        }
                         const tableOptions = tableOptionsMap[im[3]];
                         if (tableOptions) {
-                            if (!tableOptions.indices) {
-                                tableOptions.indices = [];
-                            }
+                            tableOptions.indices = tableOptions.indices || [];
                             tableOptions.indices.push(tableIndexOptions);
+                            if (tableIndexOptions.isUnique) {
+                                console.log('tableIndexOptions unique');
+                                tableOptions.uniques = tableOptions.uniques || [];
+                                tableOptions.columns = tableOptions.columns || [];
+                                tableOptions.uniques.push({
+                                    name: tableIndexOptions.name,
+                                    columnNames: tableIndexOptions.columnNames
+                                });
+                                for (const uniqueColumnName of tableIndexOptions.columnNames) {
+                                    const options = tableOptions.columns.find(c => c.name == uniqueColumnName);
+                                    if (options) {
+                                        options.isUnique = true;
+                                    } else {
+                                        throw new Error(`unique columns should exists in table ${im[3]} <= ${uniqueColumnName}`);
+                                    }
+                                }
+                            }
+                        } else {
+                            throw new Error(`index ddl appears before main table ddl: ${im[3]}`);
                         }
                     }
                     continue;
@@ -912,7 +941,7 @@ export class SpannerDriver implements Driver {
                     isPrimary: false, // set afterwards
                     isUnique: false, // set afterwards
                     isArray: type.isArray,
-                    length: type.length.toString(), 
+                    length: type.length ? type.length : undefined, 
                     default: undefined, // set in updateTableWithExtendSchema
                     generationStrategy: undefined, // set in updateTableWithExtendSchema
                 });
@@ -963,9 +992,9 @@ export class SpannerDriver implements Driver {
                 uniques
             };
         }
-        this.linkOptions(tableOptionsMap);
         const result: { [tableName:string]: Table } = {};
         for (const tableName in tableOptionsMap) {
+            // console.log('tableOptions', tableName, tableOptionsMap[tableName]);
             result[tableName] = new Table(tableOptionsMap[tableName]);
         }
         return result;
@@ -988,6 +1017,8 @@ export class SpannerDriver implements Driver {
                         throw new Error(`extendSchema for column ${columnName} exists but table does not have it`);
                     }
                 }
+            } else {
+                // console.log('extendSchema for ', tableName, 'does not exists', extendSchemas);
             }
             // console.log('table', tableName, table);
         }

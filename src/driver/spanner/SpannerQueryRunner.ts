@@ -718,7 +718,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
             oldColumn.isArray !== newColumn.isArray
             // isGenerated is managed by schemas table
         ) {
-            throw new Error(`NYI: spanner: changeColumn: not supported change ${oldColumn} => ${newColumn}`);
+            throw new Error(`NYI: spanner: changeColumn: not supported change ${JSON.stringify(oldColumn)} => ${JSON.stringify(newColumn)}`);
         }
 
         // if actually changed, store SQLs
@@ -1824,6 +1824,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      * Builds drop index sql.
      */
     protected dropIndexSql(table: Table, indexOrName: TableIndex|string): string {
+        //throw new Error('should not drop any index');
         let indexName = indexOrName instanceof TableIndex ? indexOrName.name : indexOrName;
         return `DROP INDEX \`${indexName}\``;
     }
