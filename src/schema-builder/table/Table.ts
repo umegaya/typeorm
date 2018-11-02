@@ -286,6 +286,7 @@ export class Table {
                 .map(index => TableIndex.create(index)),
             uniques: entityMetadata.uniques.map(unique => TableUnique.create(unique)),
             checks: entityMetadata.checks.map(check => TableCheck.create(check)),
+            foreignKeys: entityMetadata.foreignKeys.map(fk => TableForeignKey.create(fk)),
         };
 
         return new Table(options);

@@ -7,8 +7,15 @@ import {TableForeignKey} from "../../schema-builder/table/TableForeignKey";
 import {TableIndex} from "../../schema-builder/table/TableIndex";
 import {QueryRunnerAlreadyReleasedError} from "../../error/QueryRunnerAlreadyReleasedError";
 import {SpannerDriver, SpannerColumnUpdateWithCommitTimestamp} from "./SpannerDriver";
-import {SpannerExtendSchemas, SpannerExtendColumnSchema} from "./SpannerRawTypes";
+import {
+    SpannerExtendSchemas, 
+    SpannerExtendColumnSchema, 
+    SpannerExtendedColumnProps,
+    SpannerExtendedTableProps,
+    SpannerExtendedColumnPropsFromTableColumn
+} from "./SpannerRawTypes";
 import {ReadStream} from "../../platform/PlatformTools";
+import {EntityMetadata} from "../../metadata/EntityMetadata";
 import {RandomGenerator} from "../../util/RandomGenerator";
 import {QueryFailedError} from "../../error/QueryFailedError";
 import {TableUnique} from "../../schema-builder/table/TableUnique";
@@ -85,6 +92,10 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      * Starts transaction on the current connection.
      */
     async startTransaction(isolationLevel?: IsolationLevel): Promise<void> {
+        if (!this.driver.enableTransaction) {
+            console.log('startTransaction(ignored)');
+            return Promise.resolve();
+        }
         console.log('startTransaction');
         if (this.isTransactionActive)
             throw new TransactionAlreadyStartedError();
@@ -103,6 +114,10 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      * Error will be thrown if transaction was not started.
      */
     commitTransaction(): Promise<void> {
+        if (!this.driver.enableTransaction) {
+            console.log('commitTransaction(ignored)');
+            return Promise.resolve();
+        }
         console.log('commitTransaction');
         if (!this.isTransactionActive)
             throw new TransactionNotStartedError();
@@ -122,6 +137,10 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      * Error will be thrown if transaction was not started.
      */
     async rollbackTransaction(): Promise<void> {
+        if (!this.driver.enableTransaction) {
+            console.log('rollbackTransaction(ignored)');
+            return Promise.resolve();
+        }
         if (!this.isTransactionActive)
             throw new TransactionNotStartedError();
 
@@ -308,69 +327,6 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      */
     async dropSchema(schemaPath: string, ifExist?: boolean): Promise<void> {
         throw new Error(`NYI: spanner: dropSchema`);
-    }
-
-    /**
-     * Synchronizes table extend schema.
-     */
-    async syncExtendSchemas(tables: { [k:string]:Table }): Promise<SpannerExtendSchemas> {
-        //specify true, to update `tables` to latest schema definition automatically
-        const allSchemaObjects: { [k:string]:ObjectLiteral[] } = {};
-        const raw = await this.loadExtendSchemaTable(
-            this.driver.getSchemaTableName()
-        );
-        raw.forEach((o) => {
-            const t = o["table"];
-            if (!allSchemaObjects[t]) {
-                allSchemaObjects[t] = [];
-            }
-            allSchemaObjects[t].push(o);
-        });
-        const newExtendSchemas: SpannerExtendSchemas = {};
-        await Promise.all(Object.keys(tables).map(async (k) => {
-            const t = tables[k];
-            const promises: Promise<void[]>[] = [];
-            const schemaObjectsByTable = allSchemaObjects[t.name] || [];
-            for (const c of t.columns) {
-                const { add, remove } = this.getSyncExtendSchemaObjects(t, c);
-                const addFiltered = add.filter((e) => {
-                    // filter element which already added
-                    return !schemaObjectsByTable.find(
-                        (o) => o["column"] == e.column && 
-                            o["type"] == e.type &&
-                            o["value"] == e.value
-                    );
-                });
-                const removeFiltered = remove.filter((e) => {
-                    // filter element which does not exist
-                    return schemaObjectsByTable.find(
-                        (o) => o["column"] == e.column && 
-                            o["type"] == e.type
-                    );
-                });
-                if ((addFiltered.length + removeFiltered.length) > 0) {
-                    console.log('update schemas', 'add', addFiltered, 'rem', removeFiltered);
-                    promises.push(Promise.all([
-                        ...addFiltered.map((e) => this.upsertExtendSchema(e.table, e.column, e.type, e.value)),
-                        ...removeFiltered.map((e) => this.deleteExtendSchema(e.table, e.column, e.type))
-                    ]));
-                }
-                if (add.length > 0) {
-                    if (!newExtendSchemas[t.name]) {
-                        newExtendSchemas[t.name] = {}
-                    }
-                    for (const a of add) {
-                        newExtendSchemas[t.name][c.name] = this.createExtendSchemaObject(
-                            a.table, a.type, a.value       
-                        );
-                    }
-                }
-            }
-            if (promises.length > 0) {
-                await Promise.all(promises);
-            }
-        }));
-        return newExtendSchemas;
     }
 
     /**
@@ -1272,13 +1228,10 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      * (because it can clear all your database).
      */
     async clearDatabase(database?: string): Promise<void> {
-        console.log('clearDatabase start');
-        const tables = await this.driver.getAllTables(true);
+        const tables = await this.driver.getAllTablesForDrop(true);
         await Promise.all(Object.keys(tables).map(async (k) => {
-            console.log('clearDatabase', k);
             return this.dropTable(k);                
         }));
-        console.log('clearDatabase finish');
         /*const dbName = database ? database : this.driver.database;
         if (dbName) {
             const isDatabaseExist = await this.hasDatabase(dbName);
@@ -1314,15 +1267,9 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      * generated column's increment strategy or default value
      * @database: spanner's database object. 
      */
-    async createAndLoadSchemaTable(tableName?: string, ifNotExists?:boolean): Promise<SpannerExtendSchemas|null> {
-        console.log('createAndLoadSchemaTable start');
-        tableName = this.driver.getSchemaTableName();
+    async createAndLoadSchemaTable(tableName: string): Promise<SpannerExtendSchemas> {
         const tableExist = await this.hasTable(tableName); // todo: table name should be configurable
         if (!tableExist) {
-            if (!ifNotExists) {
-                console.log('createAndLoadSchemaTable null');
-                return null;
-            }
             await this.createTable(new Table(
                 {
                     name: tableName,
@@ -1368,8 +1315,83 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
             tableSchemas[column] = this.createExtendSchemaObject(
                 table, rawObject["type"], rawObject["value"]);
         }
+
         console.log('createAndLoadSchemaTable finish');
         return schemas;
+    }
+
+
+    /**
+     * Synchronizes table extend schema.
+     * systemTables means internally used table, such as migrations. 
+     */
+    public async syncExtendSchemas(metadata: EntityMetadata[]): Promise<SpannerExtendSchemas> {
+        // specify true, to update `tables` to latest schema definition automatically
+        const allSchemaObjects: { [k:string]:ObjectLiteral[] } = {};
+        const raw = await this.loadExtendSchemaTable(
+            this.driver.getSchemaTableName()
+        );
+        const systemTables = await this.driver.getSystemTables();
+        raw.forEach((o) => {
+            const t = o["table"];
+            if (!allSchemaObjects[t]) {
+                allSchemaObjects[t] = [];
+            }
+            allSchemaObjects[t].push(o);
+        });
+        const tableProps = (<SpannerExtendedTableProps[]>metadata)
+        .concat(systemTables.map((st) => {
+            return {
+                name: st.name,
+                columns: st.columns.map((c) => {
+                    return new SpannerExtendedColumnPropsFromTableColumn(c);
+                })
+            }
+        }));
+        const newExtendSchemas: SpannerExtendSchemas = {};
+        await Promise.all(tableProps.map(async (t) => {
+            const promises: Promise<void[]>[] = [];
+            const schemaObjectsByTable = allSchemaObjects[t.name] || [];
+            for (const c of t.columns) {
+                const { add, remove } = this.getSyncExtendSchemaObjects(t, c);
+                const addFiltered = add.filter((e) => {
+                    // filter element which already added
+                    return !schemaObjectsByTable.find(
+                        (o) => o["column"] == e.column && 
+                            o["type"] == e.type &&
+                            o["value"] == e.value
+                    );
+                });
+                const removeFiltered = remove.filter((e) => {
+                    // filter element which does not exist
+                    return schemaObjectsByTable.find(
+                        (o) => o["column"] == e.column && 
+                            o["type"] == e.type
+                    );
+                });
+                if ((addFiltered.length + removeFiltered.length) > 0) {
+                    console.log('update schemas', 'add', addFiltered, 'rem', removeFiltered);
+                    promises.push(Promise.all([
+                        ...addFiltered.map((e) => this.upsertExtendSchema(e.table, e.column, e.type, e.value)),
+                        ...removeFiltered.map((e) => this.deleteExtendSchema(e.table, e.column, e.type))
+                    ]));
+                }
+                if (add.length > 0) {
+                    if (!newExtendSchemas[t.name]) {
+                        newExtendSchemas[t.name] = {}
+                    }
+                    for (const a of add) {
+                        newExtendSchemas[t.name][c.databaseName] = this.createExtendSchemaObject(
+                            a.table, a.type, a.value       
+                        );
+                    }
+                }
+            }
+            if (promises.length > 0) {
+                await Promise.all(promises);
+            }
+        }));
+        return newExtendSchemas;
     }
 
     // -------------------------------------------------------------------------
@@ -1454,6 +1476,22 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
     }
 
     /**
+     * format [ [{name: NNN, value: VVV}, { name: MMM, value: XXX}, ...] ] into 
+     * [ { NNN: VVV, MMM: XXX, ...}, ...]
+     */
+    protected formatKeys(keys: {name: string, value: any}[][]): {[k:string]:any}[] {
+        const ret: {[k:string]:any}[] = [];
+        for (const key of keys) {
+            const v: {[k:string]:any} = {};
+            for (const entry of key) {
+                v[entry.name] = entry.value;
+            }
+            ret.push(v);
+        }
+        return ret;
+    }
+
+    /**
      * wrapper to integrate request by transaction and table
      * connect() should be already called before this function invoked.
      */
@@ -1470,10 +1508,10 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      */
     protected select<Entity>(qb: QueryBuilder<Entity>): Promise<any> {
         console.log('select', qb.getSql(), this.databaseConnection);
-        if (!this.tx) {
-            const [query, params] = qb.getQueryAndParameters();
-            return this.databaseConnection.run({sql: query, params});
-        } else {
+        //if (!this.tx) {
+        const [query, params] = qb.getQueryAndParameters();
+        return (this.tx || this.databaseConnection.run)({sql: query, params});
+        /*} else {
             return new Promise(async (ok, fail) => {
                 try {
                     const table = await this.getTable(qb.mainTableName);
@@ -1487,7 +1525,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
                     //if contained, we can omit SELECT statement. 
                     //currently, I pray spanner's optimizer is so clever that it infers values of keys from where statement.
                     const query = `SELECT ${table.primaryColumns.map((c) => c.name).join(',')} FROM ${qb.escapedMainTableName} ${whex}`;
-                    const [keys,err] = await this.databaseConnection.run(query);
+                    const [keys,err] = await (this.tx || this.databaseConnection.run)(query);
                     if (err) {
                         this.driver.connection.logger.logQueryError(err, query, [], this);
                         fail(new QueryFailedError(query, [], err));
@@ -1508,7 +1546,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
                     fail(e);
                 }
             });            
-        }
+        } */
     }
 
     /**
@@ -1550,7 +1588,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
                 const value = <ObjectLiteral>vs[0]; //above vs checks assure this cast is valid
                 const query = this.getKeyExamineQuery(value, table, qb);
                 if (query) {
-                    const [keys,err] = await this.databaseConnection.run(query);
+                    const [keys,err] = await (this.tx || this.databaseConnection).run(query);
                     if (err) {
                         this.driver.connection.logger.logQueryError(err, query, [], this);
                         fail(new QueryFailedError(query, [], err));
@@ -1560,7 +1598,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
                         ok(); //nothing to update
                         return;
                     }
-                    const rows = keys;
+                    const rows = this.formatKeys(keys);
                     for (const row of rows) {
                         Object.assign(row, value);
                     }
@@ -1570,7 +1608,6 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
                     await this.request(table, 'update', value);
                     ok(value);
                 }
-                //const query = `SELECT ${table.primaryColumns.map((c) => c.name).join(',')} FROM ${qb.escapedMainTableName} ${whex}`;
             } catch (e) {
                 fail(e);
             }
@@ -1596,13 +1633,13 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
                 const value = <ObjectLiteral>vs[0]; //above vs checks assure this cast is valid
                 const query = this.getKeyExamineQuery(value, table, qb);
                 if (query) {
-                    const [keys,err] = await this.databaseConnection.run(query);
+                    const [keys,err] = await (this.tx || this.databaseConnection).run(query);
                     if (err) {
                         this.driver.connection.logger.logQueryError(err, query, [], this);
                         fail(new QueryFailedError(query, [], err));
                         return;
                     }
-                    const rows = keys;
+                    const rows = this.formatKeys(keys);
                     for (const row of rows) {
                         Object.assign(row, value);
                     }
@@ -1632,10 +1669,10 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
                 }
                 //TODO: check where expression contains all primary key of the table, 
                 //if contained, we can omit SELECT statement. 
-                //currently, I pray spanner's optimizer is so clever that it infers values of keys from where statement.
+                //currently, I pray spanner's optimizer is enough clever that it infers values of keys from where statement.
                 const whex = qb.whereExpression;
                 const query = `SELECT ${table.primaryColumns.map((c) => c.name).join(',')} FROM ${qb.escapedMainTableName} ${whex}`;
-                const [keys,err] = await this.databaseConnection.run(query);
+                const [keys,err] = await (this.tx || this.databaseConnection).run(query);
                 if (err) {
                     this.driver.connection.logger.logQueryError(err, query, [], this);
                     fail(new QueryFailedError(query, [], err));
@@ -1645,7 +1682,8 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
                     ok(); //nothing to delete
                     return;
                 }
-                await this.request(table, 'deleteRows', keys);
+                const rows = this.formatKeys(keys);
+                await this.request(table, 'deleteRows', rows);
                 ok();
             } catch (e) {
                 fail(e);
@@ -1765,6 +1803,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
             sql += ` PRIMARY KEY (${columnNames})`;
         }
 
+        console.log('create foreignkeys', table.name, table.foreignKeys.length);
         if (table.foreignKeys.length > 0) {
             const foreignKeysSql = table.foreignKeys.map(fk => {
                 let constraint = `INTERLEAVE IN PARENT ${this.escapeTableName(fk.referencedTableName)}`;
@@ -1777,7 +1816,11 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
             }).join(", ");
 
             sql += `, ${foreignKeysSql}`;
-        }
+        }/* else if (table.name == 'Item') {
+            throw new Error('should have foreign key');
+        }*/
+
+        console.log('createTableSql', sql);
 
         return sql;
     }
@@ -1974,7 +2017,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         }
     }
 
-    protected getSyncExtendSchemaObjects(table: Table, column: TableColumn): {
+    protected getSyncExtendSchemaObjects(table: SpannerExtendedTableProps, column: SpannerExtendedColumnProps): {
         add: {table:string, column:string, type: string, value: string}[],
         remove: {table:string, column:string, type: string}[]
     } {
@@ -1983,24 +2026,16 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
             remove: <{table:string, column:string, type: string}[]>[]
         };
         if (column.default) {
-            ret.add.push({table: table.name, column: column.name, type: "default", value: column.default});
+            ret.add.push({table: table.name, column: column.databaseName, type: "default", value: column.default});
         } else {
-            ret.remove.push({table: table.name, column: column.name, type: "default"});
+            ret.remove.push({table: table.name, column: column.databaseName, type: "default"});
         }
         if (column.generationStrategy) {
-            ret.add.push({table: table.name, column: column.name, type: "generator", value: column.generationStrategy});
+            ret.add.push({table: table.name, column: column.databaseName, type: "generator", value: column.generationStrategy});
         } else {
-            ret.remove.push({table: table.name, column: column.name, type: "generator"});
+            ret.remove.push({table: table.name, column: column.databaseName, type: "generator"});
         }
         return ret;
-    }
-
-    protected async syncExtendSchema(table: Table, column: TableColumn): Promise<void> {
-        const { add, remove } = this.getSyncExtendSchemaObjects(table, column);
-        await Promise.all([
-            ...add.map((e) => this.upsertExtendSchema(e.table, e.column, e.type, e.value)),
-            ...remove.map((e) => this.deleteExtendSchema(e.table, e.column, e.type))
-        ]);
     }
 
     protected async deleteExtendSchema(table: string, column: string, type: string): Promise<void> {
