@@ -314,6 +314,7 @@ export class Table {
             uniques: entityMetadata.uniques.map(unique => TableUnique.create(unique)),
             checks: entityMetadata.checks.map(check => TableCheck.create(check)),
             exclusions: entityMetadata.exclusions.map(exclusion => TableExclusion.create(exclusion)),
+            foreignKeys: entityMetadata.foreignKeys.map(fk => TableForeignKey.create(fk)),
         };
 
         return new Table(options);
