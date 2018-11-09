@@ -666,7 +666,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
             oldColumn.asExpression !== newColumn.asExpression ||
             oldColumn.charset !== newColumn.charset || 
             oldColumn.collation !== newColumn.collation ||
-            oldColumn.comment !== newColumn.comment ||
+            // comment is not supported by spanner
             // default is managed by schemas table. 
             oldColumn.enum !== newColumn.enum ||
             oldColumn.generatedType !== newColumn.generatedType ||
@@ -1985,11 +1985,10 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         if (column.comment)
             throw new Error(`NYI: spanner: column.comment`); //c += ` COMMENT '${column.comment}'`;
 
-        // does not support any default value except SpannerColumnUpdateWithCommitTimestamp
+        // spanner ddl does not support any default value except SpannerColumnUpdateWithCommitTimestamp
+        // other default value is supported by extend schema table
         if (column.default !== undefined && column.default !== null) {
-            if (column.default !== SpannerColumnUpdateWithCommitTimestamp) {
-                throw new Error(`NYI: spanner: column.default=${column.default}`); //c += ` DEFAULT ${column.default}`;
-            } else {
+            if (column.default === SpannerColumnUpdateWithCommitTimestamp) {
                 c += `OPTIONS (allow_commit_timestamp=true)`
             }
         }
@@ -2026,7 +2025,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
             remove: <{table:string, column:string, type: string}[]>[]
         };
         if (column.default) {
-            ret.add.push({table: table.name, column: column.databaseName, type: "default", value: column.default});
+            ret.add.push({table: table.name, column: column.databaseName, type: "default", value: column.default.toString()});
         } else {
             ret.remove.push({table: table.name, column: column.databaseName, type: "default"});
         }

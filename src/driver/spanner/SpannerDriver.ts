@@ -195,7 +195,11 @@ export class SpannerDriver implements Driver {
     // -------------------------------------------------------------------------
     // static Public Methods (SpannerDriver specific)
     // -------------------------------------------------------------------------
-    static updateTableWithExtendSchema(db: SpannerDatabase, extendSchemas: SpannerExtendSchemas) {
+    static updateTableWithExtendSchema(
+        db: SpannerDatabase, 
+        extendSchemas: SpannerExtendSchemas, 
+        ignoreColumnNotFound: boolean
+    ) {
         db.schemas = extendSchemas;
         for (const tableName in db.tables) {
             const table = db.tables[tableName];
@@ -208,7 +212,7 @@ export class SpannerDriver implements Driver {
                         column.isGenerated = !!columnSchema.generator;
                         column.default = columnSchema.default;
                         column.generationStrategy = columnSchema.generatorStorategy;
-                    } else {
+                    } else if (!ignoreColumnNotFound) {
                         throw new Error(`extendSchema for column ${columnName} exists but table does not have it`);
                     }
                 }
@@ -411,7 +415,7 @@ export class SpannerDriver implements Driver {
             // 結果的にalterでは変更できない属性(defaultやgenerationStorategy)を変更しようとして
             // エラーになるため。ただしdropSchemaする場合には直後に削除されてしまい無駄なのでやらない
             if (!this.options.dropSchema) {
-                await this.setupExtendSchemas(this.spanner.database);
+                await this.setupExtendSchemas(this.spanner.database, false);
             }
         })();
     }
@@ -424,7 +428,7 @@ export class SpannerDriver implements Driver {
             if (!this.spanner) {
                 throw new Error('connect() driver first');
             }
-            await this.setupExtendSchemas(this.spanner.database);
+            await this.setupExtendSchemas(this.spanner.database, true);
             this.enableTransaction = true;
             // for (const tableName in this.spanner.database.tables) {
             // console.log('setTable', tableName, this.spanner.database.tables[tableName]);
@@ -1033,19 +1037,22 @@ export class SpannerDriver implements Driver {
         return result;
     }
 
-    protected async setupExtendSchemas(db: SpannerDatabase) {
+    protected async setupExtendSchemas(db: SpannerDatabase, afterSync: boolean) {
         console.log('setupExtendSchemas', Object.keys(db.tables));
         const queryRunner = this.createQueryRunner("master");
         // path1: recover previous extend schema stored in database
         const extendSchemas = await queryRunner.createAndLoadSchemaTable(
             this.getSchemaTableName()
         );
-        SpannerDriver.updateTableWithExtendSchema(db, extendSchemas);
+        const ignoreColumnNotFound = !afterSync;
+        SpannerDriver.updateTableWithExtendSchema(db, extendSchemas, ignoreColumnNotFound);
 
-        // path2: fill the difference from schema which is defined in code
-        const newExtendSchemas = await queryRunner.syncExtendSchemas(
-            this.getTableEntityMetadata()
-        )
-        SpannerDriver.updateTableWithExtendSchema(db, newExtendSchemas);
+        // path2: fill the difference from schema which is defined in code, if schema may change
+        if (this.options.dropSchema || this.options.synchronize || this.options.migrationsRun) {
+            const newExtendSchemas = await queryRunner.syncExtendSchemas(
+                this.getTableEntityMetadata()
+            )
+            SpannerDriver.updateTableWithExtendSchema(db, newExtendSchemas, ignoreColumnNotFound);
+        }
     }
 }
