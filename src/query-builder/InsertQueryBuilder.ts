@@ -290,7 +290,7 @@ export class InsertQueryBuilder<Entity> extends QueryBuilder<Entity> {
     /**
      * Gets list of columns where values must be inserted to.
      */
-    protected getInsertedColumns(): ColumnMetadata[] {
+    public getInsertedColumns(): ColumnMetadata[] {
         if (!this.expressionMap.mainAlias!.hasMetadata)
             return [];
 
@@ -302,7 +302,10 @@ export class InsertQueryBuilder<Entity> extends QueryBuilder<Entity> {
 
             // if user did not specified such list then return all columns except auto-increment one
             // for Oracle we return auto-increment column as well because Oracle does not support DEFAULT VALUES expression
-            if (column.isGenerated && column.generationStrategy === "increment" && !(this.connection.driver instanceof OracleDriver) && !(this.connection.driver instanceof MysqlDriver))
+            if (column.isGenerated && column.generationStrategy === "increment" && 
+                !(this.connection.driver instanceof OracleDriver) && 
+                !(this.connection.driver instanceof MysqlDriver) &&
+                !(this.connection.driver instanceof SpannerDriver))
                 return false;
 
             return true;
@@ -405,8 +408,6 @@ export class InsertQueryBuilder<Entity> extends QueryBuilder<Entity> {
                             } else {
                                 expression += "NULL"; // otherwise simply use NULL and pray if column is nullable
                             }
-                        } else if (this.connection.driver instanceof SpannerDriver) {
-                            expression += this.connection.driver.normalizeDefault(column);
                         } else {
                             expression += "DEFAULT";
                         }

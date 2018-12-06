@@ -194,17 +194,17 @@ export class Connection {
             await this.driver.afterConnect();
 
             // if option is set - drop schema once connection is done
-            console.log('------------------------ dropSchema', this.options.dropSchema);
+            this.logger.log('log', `------------------------ dropSchema(${this.options.dropSchema})`);
             if (this.options.dropSchema)
                 await this.dropDatabase();
 
             // if option is set - automatically synchronize a schema
-            console.log('------------------------ synchronize', this.options.synchronize);
+            this.logger.log('log', `------------------------ synchronize(${this.options.synchronize})`);
             if (this.options.synchronize)
                 await this.synchronize();
 
             // if option is set - automatically synchronize a schema
-            console.log('------------------------ migrationsRun', this.options.migrationsRun);
+            this.logger.log('log', `------------------------ migrationsRun(${this.options.migrationsRun})`);
             if (this.options.migrationsRun)
                 await this.runMigrations();
 

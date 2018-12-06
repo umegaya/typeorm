@@ -2122,7 +2122,6 @@ export class SelectQueryBuilder<Entity> extends QueryBuilder<Entity> implements 
      * Loads raw results from the database.
      */
     protected async loadRawResults(queryRunner: QueryRunner) {
-        //TODO: should we use queryByBuilder here? because actual sql is required.
         const [sql, parameters] = this.getQueryAndParameters();
         const queryId = sql + " -- PARAMETERS: " + JSON.stringify(parameters);
         const cacheOptions = typeof this.connection.options.cache === "object" ? this.connection.options.cache : {};
