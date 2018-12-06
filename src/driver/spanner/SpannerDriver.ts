@@ -21,6 +21,8 @@ import {SpannerDatabase, SpannerExtendSchemas} from "./SpannerRawTypes";
 import {Table} from "../../schema-builder/table/Table";
 import {ObjectLiteral} from "../../common/ObjectLiteral";
 import {DataTypeNotSupportedError} from "../../error/DataTypeNotSupportedError";
+import {SpannerUtil} from "./SpannerUtil";
+import * as Long from "long";
 //import { filter } from "minimatch";
 
 
@@ -222,6 +224,15 @@ export class SpannerDriver implements Driver {
             // console.log('table', tableName, table);
         }
     }
+    static randomInt64(): string {
+        const bytes = SpannerUtil.randomBytes(8);
+        const as_numbers: number[] = [];
+        // TODO: is there any better(faster) way? 
+        for (const b of bytes) {
+            as_numbers.push(b);
+        }
+        return Long.fromBytes(as_numbers, true).toString();
+    }
 
     // -------------------------------------------------------------------------
     // Public Methods (SpannerDriver specific)
@@ -254,7 +265,7 @@ export class SpannerDriver implements Driver {
         await this.loadTables(this.getSchemaTableName());
         return [
             this.options.migrationsTableName || "migrations"
-        ].map((name) => db.tables[name])
+        ].map((name) => db.tables[name]).filter((t) => !!t);
     }
     getExtendSchemas(): SpannerExtendSchemas {
         if (!this.spanner) {
@@ -301,26 +312,24 @@ export class SpannerDriver implements Driver {
         }
         const t = this.spanner.database.tables[tableName];
         if (t) {
-            console.log('start delete table', tableName);
+            console.log(`deleting table[${tableName}]...`);
             await this.spanner.database.handle.table(tableName)
             .delete()
             .then((data: any) => {
-                console.log('start waiting remove table', tableName);
                 // need to wait until table deletion
                 return data[0].promise();
             })
             .then(() => {
                 if (this.spanner) {
-                    console.log('remove table');
                     delete this.spanner.database.tables[tableName];
                     if (this.getSchemaTableName() == tableName) {
                         this.spanner.database.schemas = null;
                     }
                 }        
             });
-            console.log('end delete table', tableName);
+            console.log(`deleted table[${tableName}]`);
         } else {
-            console.log('dropTable', `[${tableName}]`, 'not exists', this.spanner.database.tables[tableName], this.spanner.database.tables);
+            console.log(`deleting table[${tableName}]`, 'not exists', this.spanner.database.tables);
         }
     }
     /**
@@ -364,6 +373,22 @@ export class SpannerDriver implements Driver {
     }
     getTableEntityMetadata(): EntityMetadata[] {
         return this.connection.entityMetadatas.filter(metadata => metadata.synchronize && metadata.tableType !== "entity-child");
+    }
+    autoGenerateValue(tableName: string, columnName: string): any {
+        if (!this.spanner) {
+            throw new Error('connect() driver first');
+        }
+        const database = this.spanner.database;
+        if (!database.schemas || 
+            !database.schemas[tableName] || 
+            !database.schemas[tableName][columnName]) {
+            return undefined;
+        }
+        const generator = database.schemas[tableName][columnName].generator;
+        if (!generator) {
+            return undefined;
+        }
+        return generator();
     }
 
     // -------------------------------------------------------------------------
@@ -469,21 +494,28 @@ export class SpannerDriver implements Driver {
         const keys = Object.keys(parameters).map(parameter => "(:(\\.\\.\\.)?" + parameter + "\\b)").join("|");
         sql = sql.replace(new RegExp(keys, "g"), (key: string) => {
             let value: any;
+            let paramName: string;
+            let placeHolder: string;
             if (key.substr(0, 4) === ":...") {
-                value = parameters[key.substr(4)];
+                paramName = key.substr(4);
+                placeHolder = `UNNEST(@${paramName})`;
             } else {
-                value = parameters[key.substr(1)];
+                paramName = key.substr(1);
+                placeHolder = `@${paramName}`;
             }
+            value = parameters[paramName];
 
             if (value instanceof Function) {
                 return value();
 
             } else {
-                escapedParameters.push(value);
-                return "?";
+                return placeHolder;
             }
+        // IN (UNNEST(@val)) causes error
+        }).replace(/\s+IN\s+\(([^)]+)\)/g, (key: string, p1: string) => {
+            return ` IN ${p1}`;
         }); // todo: make replace only in value statements, otherwise problems
-        return [sql, escapedParameters];
+        return [sql, [parameters]];
     }
 
     /**
@@ -523,12 +555,19 @@ export class SpannerDriver implements Driver {
         } else if (columnMetadata.type === "simple-json") {
             return DateUtils.simpleJsonToString(value);
         } */ else if (
+            columnMetadata.type == Number ||
+            columnMetadata.type == String || 
+            columnMetadata.type == Boolean ||
             columnMetadata.type == "int64" ||
             columnMetadata.type == "float64" ||
             columnMetadata.type == "bool" ||
             columnMetadata.type == "string" ||
             columnMetadata.type == "bytes") {
             return value;
+        } else if (
+            columnMetadata.type == "uuid"
+        ) {
+            return value.toString();
         }
 
         throw new DataTypeNotSupportedError(columnMetadata, columnMetadata.type, "spanner");
@@ -538,33 +577,13 @@ export class SpannerDriver implements Driver {
      * Prepares given value to a value to be persisted, based on its column type or metadata.
      */
     prepareHydratedValue(value: any, columnMetadata: ColumnMetadata): any {
-        if (value === null || value === undefined)
-            return value;
-
-        if (columnMetadata.type === "timestamp" || 
-            columnMetadata.type === "date" || 
-            columnMetadata.type === Date) {
-            value = DateUtils.mixedDateToDate(value);
-
-        } /*else if (columnMetadata.type === "simple-array") {
-            value = DateUtils.simpleArrayToString(value);
-
-        } else if (columnMetadata.type === "simple-json") {
-            value = DateUtils.simpleJsonToString(value);
-        } */ else if (
-            columnMetadata.type == "int64" ||
-            columnMetadata.type == "float64" ||
-            columnMetadata.type == "bool" ||
-            columnMetadata.type == "string" ||
-            columnMetadata.type == "bytes") {
-        } else {
-            throw new DataTypeNotSupportedError(columnMetadata, columnMetadata.type, "spanner");
+        try {
+            return this.preparePersistentValue(value, columnMetadata);
+        } catch (e) {
+            if (columnMetadata.transformer)
+                return columnMetadata.transformer.from(value);
+            throw e;
         }
-
-        if (columnMetadata.transformer)
-            value = columnMetadata.transformer.from(value);
-
-        return value;
     }
 
     /**
@@ -586,7 +605,7 @@ export class SpannerDriver implements Driver {
         } else if (column.type === Boolean) {
             return "bool";
 
-        } else if (column.type === "simple-array" || column.type === "simple-json") {
+        } else if (column.type === "simple-array" || column.type === "simple-json" || column.type === "uuid") {
             return "string";
 
         } else {
@@ -699,10 +718,7 @@ export class SpannerDriver implements Driver {
      * Creates generated map of values generated or returned by database after INSERT query.
      */
     createGeneratedMap(metadata: EntityMetadata, insertResult: any): ObjectLiteral|undefined {
-        if (insertResult) {
-            throw new Error(`NYI: spanner: createGeneratedMap`);
-        }
-        return undefined;
+        return insertResult;
     }
 
     /**
@@ -781,9 +797,11 @@ export class SpannerDriver implements Driver {
 
     /**
      * Returns true if driver supports RETURNING / OUTPUT statement.
+     * for Spanner, no auto assigned value (default/generatedStorategy(uuid, increment)) at database side. 
+     * every such values are defined in client memory, so just return insertValue. 
      */
     isReturningSqlSupported(): boolean {
-        return false;
+        return true;
     }
 
     /**
@@ -884,7 +902,7 @@ export class SpannerDriver implements Driver {
      * parse output of database.getSchema to generate Table object
      */
     protected async parseSchema(schemas: any): Promise<{[tableName: string]: Table}> {
-        console.log('parseSchema', schemas);
+        this.connection.logger.log("info", schemas);
         const tableOptionsMap: {[tableName: string]: TableOptions} = {};
         for (const stmt of schemas[0]) {
             // console.log('stmt', stmt);
@@ -933,7 +951,6 @@ export class SpannerDriver implements Driver {
                             tableOptions.indices = tableOptions.indices || [];
                             tableOptions.indices.push(tableIndexOptions);
                             if (tableIndexOptions.isUnique) {
-                                console.log('tableIndexOptions unique');
                                 tableOptions.uniques = tableOptions.uniques || [];
                                 tableOptions.columns = tableOptions.columns || [];
                                 tableOptions.uniques.push({
@@ -1038,7 +1055,6 @@ export class SpannerDriver implements Driver {
     }
 
     protected async setupExtendSchemas(db: SpannerDatabase, afterSync: boolean) {
-        console.log('setupExtendSchemas', Object.keys(db.tables));
         const queryRunner = this.createQueryRunner("master");
         // path1: recover previous extend schema stored in database
         const extendSchemas = await queryRunner.createAndLoadSchemaTable(
