@@ -174,28 +174,29 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         return new Promise(async (ok, fail) => {
             try {
                 await this.connect();
-                const db = this.databaseConnection;
+                const db = this.tx || this.databaseConnection;
                 parameters = parameters || [];
                 const [ params, types ] = parameters;
                 //console.log('query', query, params, types);
                 this.driver.connection.logger.logQuery(query, params, this);
                 const queryStartTime = +new Date();
-                db.run({sql: query, params, types}, (err: any, result: any) => {
+                db.run({sql: query, params, types, json:true}, (err: any, result: any) => {
                     // log slow queries if maxQueryExecution time is set
                     const maxQueryExecutionTime = this.driver.connection.options.maxQueryExecutionTime;
                     const queryEndTime = +new Date();
                     const queryExecutionTime = queryEndTime - queryStartTime;
+                    //console.log('query time', queryExecutionTime, 'ms');
                     if (maxQueryExecutionTime && queryExecutionTime > maxQueryExecutionTime)
                         this.driver.connection.logger.logQuerySlow(queryExecutionTime, query, parameters, this);
 
                     if (err) {
                         this.driver.connection.logger.logQueryError(err, query, parameters, this);
-                        return fail(new QueryFailedError(query, parameters, err));
+                        fail(new QueryFailedError(query, parameters, err));
+                        return;
                     }
 
-                    const r = SpannerQueryRunner.toObjectLiteral(result);
-                    //console.log(result, 'as objectliteral', r);
-                    ok(r);
+                    //console.log('query()', result);
+                    ok(result);
                 });
 
             } catch (err) {
@@ -208,7 +209,9 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      * execute query. call from XXXQueryBuilder
      */
     queryByBuilder<Entity>(qb: QueryBuilder<Entity>): Promise<any> {
-        console.log('queryByBuilder:', qb.expressionMap.queryType);
+        if (this.isReleased)
+            throw new QueryRunnerAlreadyReleasedError();
+        
         const fmaps: { [key:string]:(qb:QueryBuilder<Entity>) => Promise<any>} = {
             select: this.select,
             insert: this.insert, 
@@ -216,7 +219,9 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
             delete: this.delete
         };
         
-        return fmaps[qb.expressionMap.queryType].call(this, qb);
+        return this.connect().then(() => {
+            return fmaps[qb.expressionMap.queryType].call(this, qb);
+        });
     }
 
     queryByBuilderAndParams<Entity>(qb: QueryBuilder<Entity>, sql:string, params?:any[]): Promise<any> {
@@ -1480,28 +1485,6 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
             .getRawMany();
     }
 
-    static toObjectLiteral(rawResults: any[]): ObjectLiteral[] {
-        return rawResults.map((o) => {
-            const v: { [k:string]:any } = {}
-            for (const c of o) {
-                v[c["name"]] = c["value"];
-            }
-            return v;
-        });
-    }
-
-    /**
-     * check whether entity has all primary column key
-     */
-    protected doesValueContainAllPrimaryKeys(value: ObjectLiteral, table: Table): boolean {
-        console.log('doesValueContainAllPrimaryKeys', table.primaryColumns, value);
-        for (const pc of table.primaryColumns) {
-            if (!(pc.name in value)) {
-                return false;
-            }
-        }
-        return true;
-    }
     /**
      * get query string to examine select/update/upsert/delete keys. 
      * null means value contains all key elements already.
@@ -1520,22 +1503,21 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
             下記のようなクエリを作りidを取得する.
         */
         const expressionMap = qb.expressionMap;
-        const metadata = expressionMap.mainAlias!.metadata;
         let m: RegExpMatchArray|null;
         // check fast path
         if (expressionMap.parameters.qb_ids) {
             // non numeric single primary key
-            const pc = metadata.primaryColumns[0];
+            const pc = table.primaryColumns[0];
             const keys = keysOnly ? 
                 expressionMap.parameters.qb_ids : 
                 (expressionMap.parameters.qb_ids as any[]).map(e => {
                     return {
-                        [pc.databaseName]: e
+                        [pc.name]: e
                     };
                 });
                 this.driver.connection.logger.log("info", `single primary key ${JSON.stringify(keys)}`);
             return keys;
-        } else if (metadata && metadata.primaryColumns.length > 1) {
+        } else if (table.primaryColumns.length > 1) {
             const keys: any[] = [];
             for (const k of Object.keys(expressionMap.nativeParameters)) {
                 m = k.match(/id_([0-9]+)_([0-9]+)/);
@@ -1548,8 +1530,8 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
                     if (keysOnly) {
                         keys[idx1][idx2] = expressionMap.nativeParameters[k];
                     } else {
-                        const pc = metadata.primaryColumns[idx2];
-                        keys[idx1][pc.databaseName] = expressionMap.nativeParameters[k];
+                        const pc = table.primaryColumns[idx2];
+                        keys[idx1][pc.name] = expressionMap.nativeParameters[k];
                     }
                 }
             }
@@ -1558,53 +1540,43 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
                 return keys;
             }
         }
-        const [sql, params] = qb.getQueryAndParameters();
-        if (metadata && (m = sql.match(/IN\(([^)]+)\)/))) {
-            const pc = metadata.primaryColumns[0];
+        const [query, parameters] = qb.getQueryAndParameters();
+        const [params, types] = parameters;
+        if (m = query.match(/IN\(([^)]+)\)/)) {
+            const pc = table.primaryColumns[0];
             // parse IN statement (Number)
             // TODO: descriminator column uses IN statement. what is descriminator column? 
             const parsed = m[1].split(",");
             const keys = keysOnly ? parsed : parsed.map(e => {
                 return {
-                    [pc.databaseName]: Number(e.trim())
+                    [pc.name]: Number(e.trim())
                 };
             });
             this.driver.connection.logger.log("info", `single numeric primary ${JSON.stringify(keys)}`);
             return keys;
         }
         // not fast path. examine keys using where expression
-        const idx = sql.indexOf("FROM");
-        const query = (
+        const idx = query.indexOf("WHERE");
+        const sql = (
             `SELECT ${table.primaryColumns.map((c) => c.name).join(',')} FROM ${qb.escapedMainTableName}` + 
-            (idx >= 0 ? sql.substring(idx) : "")
+            (idx >= 0 ? query.substring(idx) : "")
         );
-        const [results,err] = await (this.tx || this.databaseConnection).run({ query, params });
+        const [results, err] = await (this.tx || this.databaseConnection).run({ sql, params, types, json:true });
         if (err) {
-            this.driver.connection.logger.logQueryError(err, query, [], this);
+            this.driver.connection.logger.logQueryError(err, sql, [], this);
             throw err;
         }
         if (!results || results.length <= 0) {
             return [];
         }
-        const keys = keysOnly ? results : SpannerQueryRunner.toObjectLiteral(results);
-        this.driver.connection.logger.log("info", `queried keys ${JSON.stringify(keys)} by ${query}`);
+        const keys = keysOnly ? 
+            (table.primaryColumns.length > 1 ? 
+                (results as ObjectLiteral[]).map(r => table.primaryColumns.map(pc => r[pc.name])) : 
+                (results as ObjectLiteral[]).map(r => r[table.primaryColumns[0].name])
+            ) : 
+            results;
+        this.driver.connection.logger.log("info", `queried keys ${JSON.stringify(keys)} by ${query} ${!!this.tx}`);
         return keys;
-}
-
-    /**
-     * format [ [{name: NNN, value: VVV}, { name: MMM, value: XXX}, ...] ] into 
-     * [ { NNN: VVV, MMM: XXX, ...}, ...]
-     */
-    protected formatKeys(keys: {name: string, value: any}[][]): {[k:string]:any}[] {
-        const ret: {[k:string]:any}[] = [];
-        for (const key of keys) {
-            const v: {[k:string]:any} = {};
-            for (const entry of key) {
-                v[entry.name] = entry.value;
-            }
-            ret.push(v);
-        }
-        return ret;
     }
 
     /**
@@ -1626,9 +1598,8 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      * Handle select query
      */
     protected select<Entity>(qb: QueryBuilder<Entity>): Promise<any> {
-        console.log('select', qb.getSql());
-        const [query, params] = qb.getQueryAndParameters();
-        return (this.tx || this.databaseConnection.run)({sql: query, params});
+        const [query, parameters] = qb.getQueryAndParameters();
+        return this.query(query, parameters);
     }
 
     /**

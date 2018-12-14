@@ -376,6 +376,7 @@ export abstract class QueryBuilder<Entity> {
             }
         }
 
+        console.log('paramters', parameters);
         return parameters;
     }
 
