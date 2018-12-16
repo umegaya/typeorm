@@ -195,8 +195,8 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
                         return;
                     }
 
-                    //console.log('query()', result);
-                    ok(result);
+                    //console.log('query()', this.tx ? SpannerQueryRunner.toObjectLiteral(result) : result);
+                    ok(this.tx ? SpannerQueryRunner.toObjectLiteral(result) : result);
                 });
 
             } catch (err) {
@@ -1485,6 +1485,16 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
             .getRawMany();
     }
 
+    protected static toObjectLiteral(rawResults: any[]): ObjectLiteral[] {
+        return rawResults.map((o) => {
+            const v: { [k:string]:any } = {}
+            for (const c of o) {
+                v[c["name"]] = c["value"];
+            }
+            return v;
+        });
+    }
+
     /**
      * get query string to examine select/update/upsert/delete keys. 
      * null means value contains all key elements already.
@@ -1561,11 +1571,12 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
             `SELECT ${table.primaryColumns.map((c) => c.name).join(',')} FROM ${qb.escapedMainTableName}` + 
             (idx >= 0 ? query.substring(idx) : "")
         );
-        const [results, err] = await (this.tx || this.databaseConnection).run({ sql, params, types, json:true });
+        const [rawResults, err] = await (this.tx || this.databaseConnection).run({ sql, params, types, json:true });
         if (err) {
             this.driver.connection.logger.logQueryError(err, sql, [], this);
             throw err;
         }
+        const results = this.tx ? SpannerQueryRunner.toObjectLiteral(rawResults) : rawResults;
         if (!results || results.length <= 0) {
             return [];
         }
@@ -1585,7 +1596,9 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      */
     protected request(table: Table, method: string, ...args: any[]): Promise<any> {
         if (this.driver.connection.options.logging) {
-            this.driver.connection.logger.logQuery(`${method} ${Table.name}`, args[0]);
+            this.driver.connection.logger.logQuery(
+                `${method} ${Table.name} ${this.isTransactionActive ? "tx" : "normal"}`, args[0]
+            );
         }
         if (this.tx) {
             return this.tx[method](table.name, ...args);
