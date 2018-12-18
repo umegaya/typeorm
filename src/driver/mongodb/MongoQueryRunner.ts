@@ -39,6 +39,8 @@ import {
 import {Connection} from "../../connection/Connection";
 import {ReadStream} from "../../platform/PlatformTools";
 import {MongoEntityManager} from "../../entity-manager/MongoEntityManager";
+import {EntityManager} from "../../entity-manager/EntityManager";
+import {IsolationLevel} from "../types/IsolationLevel";
 import {SqlInMemory} from "../SqlInMemory";
 import {TableUnique} from "../../schema-builder/table/TableUnique";
 import {Broadcaster} from "../../subscriber/Broadcaster";
@@ -396,6 +398,15 @@ export class MongoQueryRunner implements QueryRunner {
      */
     async rollbackTransaction(): Promise<void> {
         // transactions are not supported by mongodb driver, so simply don't do anything here
+    }
+
+    /**
+     * run function in transaction.
+     */
+    runInTransaction<T>(runInTransaction: (tx: EntityManager) => Promise<T>, 
+                        isolationLevel?: IsolationLevel): Promise<T> {
+        // transactions are not supported by mongodb driver, so simply don't do anything here
+        throw new Error(`transaction is not supported by mongodb driver`);
     }
 
     /**

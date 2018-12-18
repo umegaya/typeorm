@@ -24,6 +24,7 @@ import {Broadcaster} from "../../subscriber/Broadcaster";
 import {PromiseUtils} from "../../index";
 import {TableCheck} from "../../schema-builder/table/TableCheck";
 import {IsolationLevel} from "../types/IsolationLevel";
+import {EntityManager} from "../../entity-manager/EntityManager";
 import {QueryBuilder} from "../../query-builder/QueryBuilder";
 import {ObjectLiteral} from "../../common/ObjectLiteral";
 import { InsertQueryBuilder } from "../../query-builder/InsertQueryBuilder";
@@ -147,7 +148,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         if (!this.isTransactionActive)
             throw new TransactionNotStartedError();
 
-        await new Promise((res, rej) => this.tx.rollback((err: Error) => {
+        await new Promise((res, rej) => this.tx.rollback((err: Error, _: any) => {
             if (err) { rej(err); }
             else { 
                 this.tx = null;
@@ -155,6 +156,43 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
                 res(); 
             }
         }));
+    }
+
+    /**
+     * Run provided function in transaction.
+     * internally it may use start/commit Transaction.
+     * Error will be thrown if transaction start/commit will fails
+     */
+    async runInTransaction<T>(
+        runInTransaction: (tx: EntityManager) => Promise<T>, 
+        isolationLevel?: IsolationLevel
+    ): Promise<T> {
+        return new Promise<T>((res, rej) => {
+            this.connect().then(async (db) => {
+                this.databaseConnection.runTransaction({
+                    // TODO: how specify these options?
+                    //readOnly: true,
+                    strong: !!isolationLevel
+                }, async (err: Error, tx: any) => {
+                    if (err) {
+                        rej(err);
+                        return;
+                    }
+                    this.tx = tx;
+                    this.isTransactionActive = true;
+                    const r = await runInTransaction(this.manager);
+                    tx.commit((err: Error, _: any) => {
+                        if (err) {
+                            rej(err)
+                        } else {
+                            this.tx = null;
+                            this.isTransactionActive = false;
+                            res(r);
+                        }
+                    });
+                });
+            });
+        });
     }
 
     /**

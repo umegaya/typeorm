@@ -131,13 +131,7 @@ export class EntityManager {
         const queryRunner = this.queryRunner || this.connection.createQueryRunner("master");
 
         try {
-            if (isolation) {
-                await queryRunner.startTransaction(isolation);
-              } else {
-                await queryRunner.startTransaction();
-              }
-            const result = await runInTransaction(queryRunner.manager);
-            await queryRunner.commitTransaction();
+            const result = await queryRunner.runInTransaction(runInTransaction, isolation);
             await new ObserverExecutor(this.connection.observers).execute();
             return result;
 
