@@ -210,7 +210,7 @@ export class Connection {
                 await this.dropDatabase();
 
             // if option is set - run migrations
-            this.logger.log('------------------------ migrationsRun', this.options.migrationsRun);
+            this.logger.log('log', `------------------------ migrationsRun(${this.options.migrationsRun})`);
             if (this.options.migrationsRun)
                 await this.runMigrations();
 
