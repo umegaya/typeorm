@@ -5,7 +5,9 @@ import {Table} from "../schema-builder/table/Table";
 import {EntityManager} from "../entity-manager/EntityManager";
 import {TableColumn} from "../schema-builder/table/TableColumn";
 import {Broadcaster} from "../subscriber/Broadcaster";
+import {IsolationLevel} from "../driver/types/IsolationLevel";
 import { QueryBuilder } from "../query-builder/QueryBuilder";
+import { QueryRunner } from "./QueryRunner";
 
 export abstract class BaseQueryRunner {
 
@@ -349,6 +351,23 @@ export abstract class BaseQueryRunner {
             return Promise.resolve() as Promise<any>;
 
         await PromiseUtils.runInSequence(upQueries, upQuery => this.query(upQuery));
+    }
+
+    async runInTransaction<T>(
+        runInTransaction: (tx: EntityManager) => Promise<T>, 
+        isolationLevel?: IsolationLevel
+    ): Promise<T> {
+        // do this hack or duplicated runInTransaction code in XXXQueryRunner
+        // assume that extends BaseQueryRunner always comes with implements QueryRunner. 
+        const queryRunner = <QueryRunner><any>this;
+        if (isolationLevel) {
+            await queryRunner.startTransaction(isolationLevel);
+        } else {
+            await queryRunner.startTransaction();
+        }
+        const ret = runInTransaction(queryRunner.manager);
+        await queryRunner.commitTransaction();
+        return ret;
     }
 
 }

@@ -86,6 +86,14 @@ export interface QueryRunner {
     commitTransaction(): Promise<void>;
 
     /**
+     * Run provided function in transaction.
+     * internally it may use start/commit Transaction.
+     * Error will be thrown if transaction start/commit will fails
+     */
+    runInTransaction<T>(runInTransaction: (tx: EntityManager) => Promise<T>, 
+                        isolationLevel?: IsolationLevel): Promise<T>;
+
+    /**
      * Ends transaction.
      * Error will be thrown if transaction was not started.
      */
