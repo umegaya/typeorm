@@ -45,7 +45,7 @@
     "chai": "^3.5.0",
     "chai-as-promised": "^7.1.1",
     "del": "^3.0.0",
-    "gulp": "^3.9.1",
+    "gulp": "^4.0.0",
     "gulp-istanbul": "^1.1.3",
     "gulp-mocha": "^5.0.0",
     "gulp-rename": "^1.2.2",
@@ -92,7 +92,7 @@
     "sql-ddl-to-json-schema": "^2.2.0",
     "xml2js": "^0.4.17",
     "yargonaut": "^1.1.2",
-    "yargs": "^11.1.0",
+    "yargs": "^12.0.5",
     "zen-observable": "^0.8.9"
   },
   "lint-staged": {

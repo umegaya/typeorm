@@ -1,4 +1,4 @@
-import {FindOptions, FindOptionsWhere} from "../find-options/FindOptions";
+import {FindOptions, FindOptionsWhereCondition} from "../find-options/FindOptions";
 import {
     Connection,
     EntityMetadata,
@@ -46,7 +46,7 @@ export class QueryObserver {
         public connection: Connection,
         public type: "find"|"findOne"|"findAndCount"|"count",
         public metadata: EntityMetadata,
-        public options?: FindOptions<any>|FindOptionsWhere<any>,
+        public options?: FindOptions<any>|FindOptionsWhereCondition<any>|FindOptionsWhereCondition<any>[],
     ) {
     }
 
