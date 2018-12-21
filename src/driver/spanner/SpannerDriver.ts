@@ -487,6 +487,8 @@ export class SpannerDriver implements Driver {
      * and an array of parameter names to be passed to a query.
      */
     escapeQueryWithParameters(sql: string, parameters: ObjectLiteral, nativeParameters: ObjectLiteral): [string, any[]] {
+        // written values (for update) are likely to put in nativeParameter
+        // OTOH read values (for select, update, delete) are likely to put in parameter. 
         const escapedParameters: any[] = Object.keys(nativeParameters).map(key => nativeParameters[key]);
         if (!parameters || !Object.keys(parameters).length)
             return [sql, escapedParameters];
