@@ -207,7 +207,7 @@ export class SpannerDDLTransformer {
             return "NOT NULL";
         } else if (ast.autoincrement) {
             this.addExtendSchema(extendSchemas, "generator", "increment");
-        } else if (ast.default) {
+        } else if (ast.default !== undefined) {
             this.addExtendSchema(extendSchemas, "default", JSON.stringify(ast.default));
         }
         return "";
