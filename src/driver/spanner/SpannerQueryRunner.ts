@@ -1367,6 +1367,9 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
             }
             const tableSchemas = schemas[table];
             const column = rawObject["column"];
+            if (!tableSchemas[column]) {
+                tableSchemas[column] = {};
+            }
             Object.assign(tableSchemas[column], this.createExtendSchemaObject(
                 table, rawObject["type"], rawObject["value"]));
         }
