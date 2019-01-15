@@ -206,21 +206,25 @@ export class Connection {
 
             // if option is set - drop schema once connection is done
             this.logger.log('log', `------------------------ dropSchema(${this.options.dropSchema})`);
-            if (this.options.dropSchema)
+            if (this.options.dropSchema) {
                 await this.dropDatabase();
+                await this.driver.afterBootStep("DROP_DATABASE");
+            }
 
             // if option is set - run migrations
             this.logger.log('log', `------------------------ migrationsRun(${this.options.migrationsRun})`);
-            if (this.options.migrationsRun)
+            if (this.options.migrationsRun) {
                 await this.runMigrations();
+                await this.driver.afterBootStep("RUN_MIGRATION");
+            }
 
             // if option is set - automatically synchronize a schema
             this.logger.log('log', `------------------------ synchronize(${this.options.synchronize})`);
-            if (this.options.synchronize)
+            if (this.options.synchronize) {
                 await this.synchronize();
-
-            if (this.options.dropSchema || this.options.synchronize || this.options.migrationsRun)
-                await this.driver.afterSynchronize();
+                await this.driver.afterBootStep("SYNCHRONIZE");
+            }
+            await this.driver.afterBootStep("FINISH");
 
         } catch (error) {
 

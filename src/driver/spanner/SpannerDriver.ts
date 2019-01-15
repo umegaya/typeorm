@@ -20,7 +20,7 @@ import {DateUtils} from "../../util/DateUtils";
 import {SpannerDatabase, SpannerExtendSchemas} from "./SpannerRawTypes";
 import {Table} from "../../schema-builder/table/Table";
 import {ObjectLiteral} from "../../common/ObjectLiteral";
-import {DataTypeNotSupportedError} from "../../error/DataTypeNotSupportedError";
+import {ValueTransformer} from "../../decorator/options/ValueTransformer";
 import {SpannerUtil} from "./SpannerUtil";
 import * as Long from "long";
 //import { filter } from "minimatch";
@@ -160,10 +160,10 @@ export class SpannerDriver implements Driver {
         updateDateDefault: "CURRENT_TIMESTAMP(6)",
         version: "int64",
         treeLevel: "int64",
-        migrationId: "int64",
+        migrationId: "string",
         migrationName: "string",
         migrationTimestamp: "timestamp",
-        cacheId: "int64",
+        cacheId: "string",
         cacheIdentifier: "string",
         cacheTime: "int64",
         cacheDuration: "int64",
@@ -257,15 +257,25 @@ export class SpannerDriver implements Driver {
         await this.loadTables(this.getSchemaTableName());
         return this.spanner.database.tables;
     }
+    // get list of table names which has actual Table but not metadata. 
+    // (eg. migrations)
+    systemTableNames(): string[] {
+        return [
+            this.options.migrationsTableName || "migrations",
+            "query-result-cache"
+        ];
+    }
+    // get list of tables which has actual Table but not metadata. 
+    // (eg. migrations)
     async getSystemTables(): Promise<Table[]> {
         if (!this.spanner) {
             throw new Error('connect() driver first');
         }
         const db = this.spanner.database;
         await this.loadTables(this.getSchemaTableName());
-        return [
-            this.options.migrationsTableName || "migrations"
-        ].map((name) => db.tables[name]).filter((t) => !!t);
+        return this.systemTableNames()
+            .map((name) => db.tables[name])
+            .filter((t) => !!t);
     }
     getExtendSchemas(): SpannerExtendSchemas {
         if (!this.spanner) {
@@ -305,6 +315,10 @@ export class SpannerDriver implements Driver {
             throw new Error('connect() driver first');
         }
         this.spanner.database.tables[table.name] = table;
+        // if system table is updated, setup extend schemas again.
+        if (this.systemTableNames().indexOf(table.name) !== -1) {
+            this.setupExtendSchemas(this.spanner.database, false);
+        }
     }
     async dropTable(tableName: string): Promise<void> {
         if (!this.spanner) {
@@ -390,6 +404,14 @@ export class SpannerDriver implements Driver {
         }
         return generator();
     }
+    defaultValueGenerator(value: string): () => any {
+        if (value === this.mappedDataTypes.createDateDefault) {
+            return () => new Date();
+        } else {
+            const parsedDefault = JSON.parse(value);
+            return () => parsedDefault;
+        }
+    }
 
     // -------------------------------------------------------------------------
     // Public Methods
@@ -438,7 +460,7 @@ export class SpannerDriver implements Driver {
             // synchronizeに入る必要があるため、ここでsetupExtendSchemasする。
             // そうしない場合、synchronizeでそれ関連の属性で差分が出てしまい、
             // 結果的にalterでは変更できない属性(defaultやgenerationStorategy)を変更しようとして
-            // エラーになるため。ただしdropSchemaする場合には直後に削除されてしまい無駄なのでやらない
+            // エラーになるため。ただしdropSchemaする場合には直後に削除されてしまい無駄なのでafterBootStepで行う
             if (!this.options.dropSchema) {
                 await this.setupExtendSchemas(this.spanner.database, false);
             }
@@ -448,16 +470,24 @@ export class SpannerDriver implements Driver {
     /**
      * Makes any action after any synchronization happens (e.g. sync extend schema table in Spanner driver)
      */
-    afterSynchronize(): Promise<void> {
+    afterBootStep(event: "DROP_DATABASE"|"RUN_MIGRATION"|"SYNCHRONIZE"|"FINISH"): Promise<void> {
         return (async () => {
             if (!this.spanner) {
                 throw new Error('connect() driver first');
             }
-            await this.setupExtendSchemas(this.spanner.database, true);
-            this.enableTransaction = true;
-            // for (const tableName in this.spanner.database.tables) {
-            // console.log('setTable', tableName, this.spanner.database.tables[tableName]);
-            // }
+            switch (event) {
+            case "DROP_DATABASE":
+                await this.setupExtendSchemas(this.spanner.database, false);
+                break;
+            case "RUN_MIGRATION":
+                break;
+            case "SYNCHRONIZE":
+                break;
+            case "FINISH":
+                await this.setupExtendSchemas(this.spanner.database, true);
+                this.enableTransaction = true;
+                break;
+            }
         })();
     }
 
@@ -540,15 +570,23 @@ export class SpannerDriver implements Driver {
      * Prepares given value to a value to be persisted, based on its column type and metadata.
      */
     preparePersistentValue(value: any, columnMetadata: ColumnMetadata): any {
-        if (columnMetadata.transformer)
-            value = columnMetadata.transformer.to(value);
+        return this.normalizeValue(value, columnMetadata.type, columnMetadata.transformer);
+    }
+    normalizeValue(value: any, type: any, transformer?: ValueTransformer): any {
+        if (transformer)
+            value = transformer.to(value);
 
         if (value === null || value === undefined)
             return value;
 
-        if (columnMetadata.type === "timestamp" || 
-            columnMetadata.type === "date" || 
-            columnMetadata.type === Date) {
+        if (type === "timestamp" || 
+            type === "date" || 
+            type === Date) {
+            if (typeof(value) === 'number') {
+                // convert millisecond numeric timestamp to date object. 
+                // because @google/spanner does not accept it
+                return new Date(value); 
+            }
             return DateUtils.mixedDateToDate(value);
 
         } /*else if (columnMetadata.type === "simple-array") {
@@ -557,22 +595,22 @@ export class SpannerDriver implements Driver {
         } else if (columnMetadata.type === "simple-json") {
             return DateUtils.simpleJsonToString(value);
         } */ else if (
-            columnMetadata.type == Number ||
-            columnMetadata.type == String || 
-            columnMetadata.type == Boolean ||
-            columnMetadata.type == "int64" ||
-            columnMetadata.type == "float64" ||
-            columnMetadata.type == "bool" ||
-            columnMetadata.type == "string" ||
-            columnMetadata.type == "bytes") {
+            type == Number ||
+            type == String || 
+            type == Boolean ||
+            type == "int64" ||
+            type == "float64" ||
+            type == "bool" ||
+            type == "string" ||
+            type == "bytes") {
             return value;
         } else if (
-            columnMetadata.type == "uuid"
+            type == "uuid"
         ) {
             return value.toString();
         }
 
-        throw new DataTypeNotSupportedError(columnMetadata, columnMetadata.type, "spanner");
+        throw new Error(`spanner driver does not support '${type}' column type`);
     }
 
     /**
@@ -592,15 +630,15 @@ export class SpannerDriver implements Driver {
      * Creates a database type from a given column metadata.
      */
     normalizeType(column: { type: ColumnType, length?: number|string, precision?: number|null, scale?: number }): string {
-        if (column.type === Number) {
-            if (column.type.toString().indexOf("float") !== -1 ||
-                column.type.toString().indexOf("double") !== -1 ||
-                column.type.toString().indexOf("dec") !== -1) {
-                return "float64";
-            }
+        if (column.type === Number || column.type.toString().indexOf("int") !== -1) {
             return "int64";
 
-        } else if (column.type === String || 
+        } else if (column.type.toString().indexOf("float") !== -1 ||
+            column.type.toString().indexOf("double") !== -1 ||
+            column.type.toString().indexOf("dec") !== -1) {
+            return "float64";
+        }
+        else if (column.type === String || 
             column.type.toString().indexOf("char") !== -1 ||
             column.type.toString().indexOf("text") !== -1) {
             return "string";
@@ -923,7 +961,7 @@ export class SpannerDriver implements Driver {
             // stmt =~ /CREATE ${tableName} (IF NOT EXISTS) (${columns}) ${interleaves}/
             /* example. 
             CREATE TABLE migrations (
-                id INT64 NOT NULL,
+                id STRING(255) NOT NULL,
                 timestamp TIMESTAMP NOT NULL,
                 name STRING(255) NOT NULL,
             ) PRIMARY KEY(id)

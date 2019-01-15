@@ -168,11 +168,11 @@ export class SpannerDDLTransformer {
     }
     protected O_DATATYPE(ast: any, extendSchemas: SpannerExtendSchemaSources): string {
         // handle all O_XXXXX_DATATYPE 
-        const binaryTypeChecker = (ot: string) => {
-            if (ot.indexOf("blob") >= 0 || ot.indexOf("binary") >= 0) {
-                return "bytes";
+        const lengthTypeChecker = (ast: any) => {
+            if (ast.datatype.indexOf("blob") >= 0 || ast.datatype.indexOf("binary") >= 0) {
+                return `bytes(${ast.length})`;
             } else {
-                return "string";
+                return `string(${ast.length})`;
             }
         };
         const dataTypeMap: { [id:string]:string|DataTypeChecker|undefined } = {
@@ -183,18 +183,18 @@ export class SpannerDDLTransformer {
             O_BOOLEAN_DATATYPE: "bool",
             O_DATETIME_DATATYPE: "timestamp",
             O_YEAR_DATATYPE: "date",
-            O_VARIABLE_STRING_DATATYPE: binaryTypeChecker,
-            O_FIXED_STRING_DATATYPE: binaryTypeChecker,
-            O_ENUM_DATATYPE: "string",
+            O_VARIABLE_STRING_DATATYPE: lengthTypeChecker,
+            O_FIXED_STRING_DATATYPE: lengthTypeChecker,
+            O_ENUM_DATATYPE: "string(max)",
             O_SET_DATATYPE: undefined,
             O_SPATIAL_DATATYPE: undefined,
-            O_JSON_DATATYPE: "string"
+            O_JSON_DATATYPE: "string(max)"
         };
         const t = dataTypeMap[ast.def.id];
         if (!t) {
             throw new Error(`unsupported data type: ${ast.def.id}`);
         } else if (typeof(t) === "function") {
-            return t(ast.def.def.datatype);
+            return t(ast.def.def);
         } else {
             return t;
         }

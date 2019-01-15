@@ -228,7 +228,7 @@ export class MongoDriver implements Driver {
         return Promise.resolve();
     }
 
-    afterSynchronize(): Promise<void> {
+    afterBootStep(event: "DROP_DATABASE"|"RUN_MIGRATION"|"SYNCHRONIZE"|"FINISH"): Promise<void> {
         return Promise.resolve();
     }
 
