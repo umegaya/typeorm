@@ -27,6 +27,7 @@ interface Index {
 export class SpannerDDLTransformer {
     scopedTable: string;
     scopedColumn?: string;
+    scopedColumnType?: string;
     scopedIndex?: string;
     primaryKeyColumns: Column[];
     indices: Index[];
@@ -138,10 +139,9 @@ export class SpannerDDLTransformer {
             addUniqueKey: this.O_ALTER_TABLE_SPEC_addUniqueKey,
             dropIndex: this.O_ALTER_TABLE_SPEC_dropIndex,
         };
-        return actionSqlMap[ast.def.action](ast.def, extendSchemas);
+        return actionSqlMap[ast.def.action].call(this, ast.def, extendSchemas);
     }
     protected O_ALTER_TABLE_SPEC_addColumn(ast: any, extendSchemas: SpannerExtendSchemaSources): string {
-        this.setScopedColumn(ast.name);
         return `ALTER TABLE ${this.scopedTable} ADD COLUMN ${ast.name} ` + 
             this.alterColumnDefinitionHelper(ast, extendSchemas);
     }
@@ -150,7 +150,6 @@ export class SpannerDDLTransformer {
         return `ALTER TABLE ${this.scopedTable} DROP COLUMN ${ast.column}`;
     }
     protected O_ALTER_TABLE_SPEC_changeColumn(ast: any, extendSchemas: SpannerExtendSchemaSources): string {
-        this.setScopedColumn(ast.column);
         return `ALTER TABLE ${this.scopedTable} ALTER COLUMN ${[ast.column, ast.newName].filter((e: string) => !!e).join(' ')} ` + 
             this.alterColumnDefinitionHelper(ast, extendSchemas);
     }
@@ -194,15 +193,16 @@ export class SpannerDDLTransformer {
         if (!t) {
             throw new Error(`unsupported data type: ${ast.def.id}`);
         } else if (typeof(t) === "function") {
-            return t(ast.def.def);
+            this.scopedColumnType = t(ast.def.def);
         } else {
-            return t;
+            this.scopedColumnType = t;
         }
+        return this.scopedColumnType;
     }
     // O_XXXXX_DATATYPE: default (ignored)
     protected O_COLUMN_DEFINITION(ast: any, extendSchemas: SpannerExtendSchemaSources): string {
         if (ast.nullable === true) {
-            return "NULL";
+            return ""; //spanner does not allow `NULL` to express nullable column. all column nullable by default.
         } else if (ast.nullable === false) {
             return "NOT NULL";
         } else if (ast.autoincrement) {
@@ -215,6 +215,7 @@ export class SpannerDDLTransformer {
 
     // helpers
     protected alterColumnDefinitionHelper(ast: any, extendSchemas: SpannerExtendSchemaSources): string {
+        this.setScopedColumn(ast.name);
         return `${this.O_DATATYPE(ast.datatype, extendSchemas)} ` + 
         `${this.O_COLUMN_DEFINITION(ast.columnDefinition, extendSchemas)}` + 
         (ast.position ? (ast.position.after ? `AFTER ${ast.position.after}` : "FIRST") : "");
