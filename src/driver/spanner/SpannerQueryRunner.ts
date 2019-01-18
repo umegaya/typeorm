@@ -1402,7 +1402,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
             }
             // value is stored in data as JSON.stringify form
             Object.assign(tableSchemas[column], this.createExtendSchemaObject(
-                table, rawObject["type"], JSON.stringify(rawObject["value"])));
+                table, rawObject["type"], rawObject["value"]));
         }
 
         return schemas;
