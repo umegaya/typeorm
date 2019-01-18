@@ -1304,10 +1304,19 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      */
     async clearDatabase(database?: string): Promise<void> {
         const tables = await this.driver.getAllTablesForDrop(true);
-        // TODO: if too many, separate deletaion group (~5 for each)
-        await Promise.all(Object.keys(tables).map(async (k) => {
-            return this.dropTable(k);                
-        }));
+        const keys = Object.keys(tables);
+        const CONCURRENT_DELETION = 10;
+        for (let i = 0; i < Math.ceil(keys.length / CONCURRENT_DELETION); i++) {
+            const start = i * CONCURRENT_DELETION;
+            const end = (i + 1) * CONCURRENT_DELETION;
+            const range = keys.slice(start, end);
+            if (range.length <= 0) {
+                break;
+            }
+            await Promise.all(range.map(async (k) => {
+                return this.dropTable(k);                
+            }));
+        }
         /*const dbName = database ? database : this.driver.database;
         if (dbName) {
             const isDatabaseExist = await this.hasDatabase(dbName);
@@ -1816,7 +1825,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         parser.feed(ddl);
 
         const extendSchemas: SpannerExtendSchemaSources = {};
-        const t = new SpannerDDLTransformer();
+        const t = new SpannerDDLTransformer(this.driver.encodeDefaultValueGenerator.bind(this.driver));
         return [t.transform(parser.results[0], extendSchemas), extendSchemas, t.scopedTable];
     }
 

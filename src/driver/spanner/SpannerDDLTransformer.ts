@@ -25,6 +25,7 @@ interface Index {
 };
 
 export class SpannerDDLTransformer {
+    defaultValueEncoder: (value: any) => string;
     scopedTable: string;
     scopedColumn?: string;
     scopedColumnType?: string;
@@ -32,7 +33,8 @@ export class SpannerDDLTransformer {
     primaryKeyColumns: Column[];
     indices: Index[];
 
-    constructor() {
+    constructor(defaultValueEncoder: (value: any) => string) {
+        this.defaultValueEncoder = defaultValueEncoder;
         this.primaryKeyColumns = [];
         this.indices = [];
     }
@@ -208,7 +210,7 @@ export class SpannerDDLTransformer {
         } else if (ast.autoincrement) {
             this.addExtendSchema(extendSchemas, "generator", "increment");
         } else if (ast.default !== undefined) {
-            this.addExtendSchema(extendSchemas, "default", JSON.stringify(ast.default));
+            this.addExtendSchema(extendSchemas, "default", this.defaultValueEncoder(ast.default));
         }
         return "";
     }
