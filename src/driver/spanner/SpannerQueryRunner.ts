@@ -1526,7 +1526,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
                     const value = this.driver.autoGenerateValue(table.name, column.name);
                     if (value !== undefined) {
                         values[column.name] = value;
-                    }   
+                    }
                 } else {
                     values[column.name] = this.driver.normalizeValue(
                         values[column.name], column.type);
@@ -2146,7 +2146,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
             add: <{table:string, column:string, type: string, value: string}[]>[],
             remove: <{table:string, column:string, type: string}[]>[]
         };
-        if (column.default) {
+        if (column.default !== undefined) {
             const defaultValue = this.driver.encodeDefaultValueGenerator(column.default);
             ret.add.push({table: table.name, column: column.databaseName, type: "default", value: defaultValue});
         } else {

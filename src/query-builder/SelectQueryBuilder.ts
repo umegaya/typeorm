@@ -1913,20 +1913,20 @@ export class SelectQueryBuilder<Entity> extends QueryBuilder<Entity> implements 
                 countSql = `COUNT(DISTINCT(` + metadata.primaryColumns.map((primaryColumn, index) => {
                     const propertyName = this.escape(primaryColumn.databaseName);
                     return `${distinctAlias}.${propertyName}`;
-                }).join(" || ") + ")) as \"cnt\"";
+                }).join(" || ") + `)) as ${this.escape("cnt")}`;
 
             } else {
                 countSql = `COUNT(DISTINCT(CONCAT(` + metadata.primaryColumns.map((primaryColumn, index) => {
                     const propertyName = this.escape(primaryColumn.databaseName);
                     return `${distinctAlias}.${propertyName}`;
-                }).join(", ") + "))) as \"cnt\"";
+                }).join(", ") + `))) as ${this.escape("cnt")}`;
             }
 
         } else {
             countSql = `COUNT(DISTINCT(` + metadata.primaryColumns.map((primaryColumn, index) => {
                 const propertyName = this.escape(primaryColumn.databaseName);
                 return `${distinctAlias}.${propertyName}`;
-            }).join(", ") + ")) as \"cnt\"";
+            }).join(", ") + `)) as ${this.escape("cnt")}`;
         }
 
         const results = await this.clone()
