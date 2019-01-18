@@ -1290,7 +1290,11 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         if (tableOrName instanceof Table) {
             tableOrName = tableOrName.name;
         }
-        return this.dropTable(tableOrName);
+        const qb = this.connection.manager
+            .createQueryBuilder(this)
+            .delete()
+            .from(tableOrName);
+        return this.delete(qb);
     }
 
     /**
@@ -1300,6 +1304,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      */
     async clearDatabase(database?: string): Promise<void> {
         const tables = await this.driver.getAllTablesForDrop(true);
+        // TODO: if too many, separate deletaion group (~5 for each)
         await Promise.all(Object.keys(tables).map(async (k) => {
             return this.dropTable(k);                
         }));
@@ -1424,13 +1429,11 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         }));
         const newExtendSchemas: SpannerExtendSchemas = {};
         await Promise.all(tableProps.map(async (t) => {
-            const log = t.name === "migrations" ? console.log : () => {};
             const promises: Promise<void[]>[] = [];
             const schemaObjectsByTable = allSchemaObjects[t.name] || [];
             for (const c of t.columns) {
                 //add, remove is not json stringified.
                 const { add, remove } = this.getSyncExtendSchemaObjects(t, c);
-                log('syncExtendSchemas', c.databaseName, add, remove);
                 const addFiltered = add.filter((e) => {
                     // filter element which already added and not changed
                     return !schemaObjectsByTable.find(
@@ -1500,7 +1503,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
 
         } else if (type === "default") {
             columnSchema.default = value;
-            columnSchema.generator = this.driver.defaultValueGenerator(value);
+            columnSchema.generator = this.driver.decodeDefaultValueGenerator(value);
 
         }
 
@@ -1672,7 +1675,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
     ): Promise<any> {
         if (this.driver.connection.options.logging) {
             this.driver.connection.logger.logQuery(
-                `${method} ${Table.name} ${this.isTransactionActive ? "tx" : "non-tx"}`, args[0]
+                `${method} ${table.name} ${this.isTransactionActive ? "tx" : "non-tx"}`, args[0]
             );
         }
         if (this.tx) {
@@ -2144,8 +2147,8 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
             remove: <{table:string, column:string, type: string}[]>[]
         };
         if (column.default) {
-            const defaultValue = typeof(column.default) === 'function' ? column.default() : column.default;
-            ret.add.push({table: table.name, column: column.databaseName, type: "default", value: JSON.stringify(defaultValue)});
+            const defaultValue = this.driver.encodeDefaultValueGenerator(column.default);
+            ret.add.push({table: table.name, column: column.databaseName, type: "default", value: defaultValue});
         } else {
             ret.remove.push({table: table.name, column: column.databaseName, type: "default"});
         }

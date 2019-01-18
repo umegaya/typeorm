@@ -404,7 +404,15 @@ export class SpannerDriver implements Driver {
         }
         return generator();
     }
-    defaultValueGenerator(value: string): () => any {
+    encodeDefaultValueGenerator(value: any): string {
+        const defaultValue = typeof(value) === 'function' ? value() : value;
+        if (defaultValue === this.mappedDataTypes.createDateDefault) {
+            return defaultValue;
+        } else {
+            return JSON.stringify(defaultValue);
+        }
+    }
+    decodeDefaultValueGenerator(value: string): () => any {
         if (value === this.mappedDataTypes.createDateDefault) {
             return () => new Date();
         } else {
@@ -519,9 +527,8 @@ export class SpannerDriver implements Driver {
     escapeQueryWithParameters(sql: string, parameters: ObjectLiteral, nativeParameters: ObjectLiteral): [string, any[]] {
         // written values (for update) are likely to put in nativeParameter
         // OTOH read values (for select, update, delete) are likely to put in parameter. 
-        const escapedParameters: any[] = Object.keys(nativeParameters).map(key => nativeParameters[key]);
         if (!parameters || !Object.keys(parameters).length)
-            return [sql, escapedParameters];
+            return [sql, [nativeParameters]];
 
         const keys = Object.keys(parameters).map(parameter => "(:(\\.\\.\\.)?" + parameter + "\\b)").join("|");
         sql = sql.replace(new RegExp(keys, "g"), (key: string) => {
@@ -570,7 +577,7 @@ export class SpannerDriver implements Driver {
      * Prepares given value to a value to be persisted, based on its column type and metadata.
      */
     preparePersistentValue(value: any, columnMetadata: ColumnMetadata): any {
-        return this.normalizeValue(value, columnMetadata.type, columnMetadata.transformer);
+        return this.normalizeValue(value, this.normalizeType({type:columnMetadata.type}), columnMetadata.transformer);
     }
     normalizeValue(value: any, type: any, transformer?: ValueTransformer): any {
         if (transformer)
@@ -900,6 +907,7 @@ export class SpannerDriver implements Driver {
             });
 
         } catch (e) {
+            console.log(e);
             throw new DriverPackageNotInstalledError("Spanner", "@google-cloud/spanner");
         }
     }
