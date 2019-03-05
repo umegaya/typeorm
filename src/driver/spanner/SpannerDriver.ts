@@ -1115,13 +1115,14 @@ export class SpannerDriver implements Driver {
     }
 
     protected async setupExtendSchemas(db: SpannerDatabase, afterSync: boolean) {
+        const maybeSchemaChange = this.options.dropSchema || this.options.synchronize || this.options.migrationsRun
         const queryRunner = this.createQueryRunner("master");
         // path1: recover previous extend schema stored in database
         const extendSchemas = await queryRunner.createAndLoadSchemaTable(
             this.getSchemaTableName()
         );
         const ignoreColumnNotFound = !afterSync;
-        if (afterSync) {
+        if (maybeSchemaChange && afterSync) {
             const database = this.spanner!.database;
             const handle = database.handle;
             const schemas = await handle.getSchema();
@@ -1130,7 +1131,7 @@ export class SpannerDriver implements Driver {
         SpannerDriver.updateTableWithExtendSchema(db, extendSchemas, ignoreColumnNotFound);
 
         // path2: fill the difference from schema which is defined in code, if schema may change
-        if (this.options.dropSchema || this.options.synchronize || this.options.migrationsRun) {
+        if (maybeSchemaChange) {
             const newExtendSchemas = await queryRunner.syncExtendSchemas(
                 this.getTableEntityMetadata()
             )
