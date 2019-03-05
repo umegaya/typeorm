@@ -1121,6 +1121,12 @@ export class SpannerDriver implements Driver {
             this.getSchemaTableName()
         );
         const ignoreColumnNotFound = !afterSync;
+        if (afterSync) {
+            const database = this.spanner!.database;
+            const handle = database.handle;
+            const schemas = await handle.getSchema();
+            database.tables = await this.parseSchema(schemas);
+        }
         SpannerDriver.updateTableWithExtendSchema(db, extendSchemas, ignoreColumnNotFound);
 
         // path2: fill the difference from schema which is defined in code, if schema may change
