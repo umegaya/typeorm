@@ -1294,7 +1294,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
             .createQueryBuilder(this)
             .delete()
             .from(tableOrName);
-        return this.delete(qb);
+        return await this.delete(qb);
     }
 
     /**
@@ -1796,7 +1796,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
                     return;
                 }
                 const rows = await this.examineKeys(table, qb, true).catch(fail);
-                if (rows === null) {
+                if (rows === null || (<any[]>rows).length <= 0) {
                     ok();
                     return;
                 }
