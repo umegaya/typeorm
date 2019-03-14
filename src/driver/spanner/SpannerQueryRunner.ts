@@ -2159,7 +2159,12 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
             const defaultValue = this.driver.encodeDefaultValueGenerator(column.default);
             ret.add.push({table: table.name, column: column.databaseName, type: "default", value: defaultValue});
         } else {
-            ret.remove.push({table: table.name, column: column.databaseName, type: "default"});
+            if (column.isNullable) {
+                const defaultValue = this.driver.encodeDefaultValueGenerator(null);
+                ret.add.push({table: table.name, column: column.databaseName, type: "default", value: defaultValue});
+            } else {
+                ret.remove.push({table: table.name, column: column.databaseName, type: "default"});
+            }
         }
         if (column.generationStrategy) {
             ret.add.push({table: table.name, column: column.databaseName, type: "generator", value: column.generationStrategy});

@@ -35,6 +35,7 @@ export interface SpannerDatabase {
 export interface SpannerExtendedColumnProps {
     databaseName: string;
     default?: any;
+    isNullable?: boolean;
     generationStrategy?: "uuid" | "increment";
 }
 
