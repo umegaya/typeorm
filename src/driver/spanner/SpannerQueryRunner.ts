@@ -1436,11 +1436,21 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
                 })
             }
         }));
+        const oldNormalTables = Object.keys(allSchemaObjects);
         const newExtendSchemas: SpannerExtendSchemas = {};
         await Promise.all(tableProps.map(async (t) => {
+            const oldTableIndex = oldNormalTables.indexOf(t.name);
+            if (oldTableIndex >= 0) {
+                oldNormalTables.splice(oldTableIndex, 1);
+            }
             const promises: Promise<void[]>[] = [];
             const schemaObjectsByTable = allSchemaObjects[t.name] || [];
+            const oldColumns = schemaObjectsByTable.map(o => o["column"]);
             for (const c of t.columns) {
+                const oldColumnIndex = oldColumns.indexOf(c.databaseName);
+                if (oldColumnIndex >= 0) {
+                    oldColumns.splice(oldColumnIndex, 1);
+                }
                 //add, remove is not json stringified.
                 const { add, remove } = this.getSyncExtendSchemaObjects(t, c);
                 const addFiltered = add.filter((e) => {
@@ -1474,10 +1484,23 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
                     }
                 }
             }
+            // if column is no more exists in new entity metadata, remove all extend schema for such columns
+            if (oldColumns.length > 0) {
+                console.log('oldColumns', oldColumns);
+                promises.push(Promise.all(oldColumns.map(async c => {
+                    await this.deleteExtendSchema(t.name, c);
+                })));
+            }
             if (promises.length > 0) {
                 await Promise.all(promises);
             }
         }));
+        if (oldNormalTables.length > 0) {
+            //console.log('oldNormalTables', oldNormalTables);
+            await Promise.all(oldNormalTables.map(async (tableName) => {
+                await this.deleteExtendSchema(tableName);
+            }));
+        }
         return newExtendSchemas;
     }
 
@@ -2174,12 +2197,19 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         return ret;
     }
 
-    protected async deleteExtendSchema(table: string, column: string, type: string): Promise<void> {
+    protected async deleteExtendSchema(table: string, column?: string, type?: string): Promise<void> {
+        const wh = column ? (
+            type ?
+                `\`table\` = '${table}' AND \`column\` = '${column}' AND \`type\` = '${type}'` :
+                `\`table\` = '${table}' AND \`column\` = '${column}'`
+        ) : (
+            `\`table\` = '${table}'`
+        );
         const qb = this.connection.manager
             .createQueryBuilder(this)
             .delete()
             .from(this.driver.options.schemaTableName || "schemas")
-            .where(`\`table\` = '${table}' AND \`column\` = '${column}' AND \`type\` = '${type}'`);
+            .where(wh);
         return this.delete(qb);
     }
 
