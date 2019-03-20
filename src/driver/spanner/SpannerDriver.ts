@@ -23,6 +23,11 @@ import {ObjectLiteral} from "../../common/ObjectLiteral";
 import {ValueTransformer} from "../../decorator/options/ValueTransformer";
 import {SpannerUtil} from "./SpannerUtil";
 import * as Long from "long";
+if (process.env.PRELOAD_SPANNER_DEPENDENCY) {
+    require('@google-cloud/spanner');
+    require('sql-ddl-to-json-schema');
+}
+
 //import { filter } from "minimatch";
 
 
