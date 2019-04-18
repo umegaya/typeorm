@@ -252,6 +252,10 @@ export class CockroachDriver implements Driver {
         return Promise.resolve();
     }
 
+    afterBootStep(event: "DROP_DATABASE"|"RUN_MIGRATION"|"SYNCHRONIZE"|"FINISH"): Promise<void> {
+        return Promise.resolve();
+    }
+
     /**
      * Closes connection with database.
      */

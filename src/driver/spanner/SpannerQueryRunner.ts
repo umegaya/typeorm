@@ -8,8 +8,8 @@ import {TableIndex} from "../../schema-builder/table/TableIndex";
 import {QueryRunnerAlreadyReleasedError} from "../../error/QueryRunnerAlreadyReleasedError";
 import {SpannerDriver, SpannerColumnUpdateWithCommitTimestamp} from "./SpannerDriver";
 import {
-    SpannerExtendSchemas, 
-    SpannerExtendColumnSchema, 
+    SpannerExtendSchemas,
+    SpannerExtendColumnSchema,
     SpannerExtendedColumnProps,
     SpannerExtendedTableProps,
     SpannerExtendedColumnPropsFromTableColumn,
@@ -29,6 +29,7 @@ import {IsolationLevel} from "../types/IsolationLevel";
 import {EntityManager} from "../../entity-manager/EntityManager";
 import {QueryBuilder} from "../../query-builder/QueryBuilder";
 import {ObjectLiteral} from "../../common/ObjectLiteral";
+import {TableExclusion} from "../../schema-builder/table/TableExclusion";
 
 /**
  * Runs queries on a single mysql database connection.
@@ -51,10 +52,10 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
     /**
      * transaction if startsTransaction
      */
-    protected tx: any; 
+    protected tx: any;
 
     /**
-     * disable ddl parser. from synchronization, actual spanner DDL generated, 
+     * disable ddl parser. from synchronization, actual spanner DDL generated,
      * so no need to parse even if option specify to use it.
      */
     protected disableDDLParser: boolean;
@@ -134,10 +135,10 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         return new Promise((res, rej) => this.tx.commit((err: Error, _: any) => {
             //console.log('commitTransaction cb', err, _);
             if (err) { rej(err); }
-            else { 
+            else {
                 this.tx = null;
                 this.isTransactionActive = false;
-                res(); 
+                res();
             }
         }));
     }
@@ -156,10 +157,10 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
 
         await new Promise((res, rej) => this.tx.rollback((err: Error, _: any) => {
             if (err) { rej(err); }
-            else { 
+            else {
                 this.tx = null;
                 this.isTransactionActive = false;
-                res(); 
+                res();
             }
         }));
     }
@@ -170,7 +171,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      * Error will be thrown if transaction start/commit will fails
      */
     async runInTransaction<T>(
-        runInTransaction: (tx: EntityManager) => Promise<T>, 
+        runInTransaction: (tx: EntityManager) => Promise<T>,
         isolationLevel?: IsolationLevel
     ): Promise<T> {
         return new Promise<T>((res, rej) => {
@@ -265,14 +266,14 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
     queryByBuilder<Entity>(qb: QueryBuilder<Entity>): Promise<any> {
         if (this.isReleased)
             throw new QueryRunnerAlreadyReleasedError();
-        
+
         const fmaps: { [key:string]:(qb:QueryBuilder<Entity>) => Promise<any>} = {
             select: this.select,
-            insert: this.insert, 
+            insert: this.insert,
             update: this.update,
             delete: this.delete
         };
-        
+
         return this.connect().then(() => {
             return fmaps[qb.expressionMap.queryType].call(this, qb);
         });
@@ -401,7 +402,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
 
     /**
      * Creates a new table. aka 'schema' on spanner
-     * note that foreign key always dropped regardless the value of createForeignKeys. 
+     * note that foreign key always dropped regardless the value of createForeignKeys.
      * because our foreignkey analogue is achieved by interleaved table
      */
     async createTable(table: Table, ifNotExist: boolean = false, createForeignKeys: boolean = true): Promise<void> {
@@ -439,7 +440,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
             });
         }
 
-        // we don't drop foreign key itself. because its created with table 
+        // we don't drop foreign key itself. because its created with table
         // if (createForeignKeys)
         // table.foreignKeys.forEach(foreignKey => downQueries.push(this.dropForeignKeySql(table, foreignKey)));
 
@@ -452,7 +453,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
 
     /**
      * Drop the table.
-     * note that foreign key always dropped regardless the value of dropForeignKeys. 
+     * note that foreign key always dropped regardless the value of dropForeignKeys.
      * because our foreignkey analogue is achieved by interleaved table
      */
     async dropTable(target: Table|string, ifExist?: boolean, dropForeignKeys: boolean = true): Promise<void> {
@@ -735,10 +736,10 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         // any other invalid changes
         if (oldColumn.isPrimary !== newColumn.isPrimary ||
             oldColumn.asExpression !== newColumn.asExpression ||
-            oldColumn.charset !== newColumn.charset || 
+            oldColumn.charset !== newColumn.charset ||
             oldColumn.collation !== newColumn.collation ||
             // comment is not supported by spanner
-            // default is managed by schemas table. 
+            // default is managed by schemas table.
             oldColumn.enum !== newColumn.enum ||
             oldColumn.generatedType !== newColumn.generatedType ||
             // generationStorategy is managed by schemas table
@@ -1314,7 +1315,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
                 break;
             }
             await Promise.all(range.map(async (k) => {
-                return this.dropTable(k);                
+                return this.dropTable(k);
             }));
         }
         /*const dbName = database ? database : this.driver.database;
@@ -1350,7 +1351,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
     /**
      * create `schemas` table which describe additional column information such as
      * generated column's increment strategy or default value
-     * @database: spanner's database object. 
+     * @database: spanner's database object.
      */
     async createAndLoadSchemaTable(tableName: string): Promise<SpannerExtendSchemas> {
         const tableExist = await this.hasTable(tableName); // todo: table name should be configurable
@@ -1411,7 +1412,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
 
     /**
      * Synchronizes table extend schema.
-     * systemTables means internally used table, such as migrations. 
+     * systemTables means internally used table, such as migrations.
      */
     public async syncExtendSchemas(metadata: EntityMetadata[]): Promise<SpannerExtendSchemas> {
         // specify true, to update `tables` to latest schema definition automatically
@@ -1456,7 +1457,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
                 const addFiltered = add.filter((e) => {
                     // filter element which already added and not changed
                     return !schemaObjectsByTable.find(
-                        (o) => o["column"] === e.column && 
+                        (o) => o["column"] === e.column &&
                             o["type"] === e.type &&
                             o["value"] === e.value
                     );
@@ -1479,7 +1480,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
                     }
                     for (const a of add) {
                         newExtendSchemas[t.name][c.databaseName] = this.createExtendSchemaObject(
-                            a.table, a.type, a.value       
+                            a.table, a.type, a.value
                         );
                     }
                 }
@@ -1504,15 +1505,45 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         return newExtendSchemas;
     }
 
+    /**
+     * Creates a new exclusion constraint.
+     */
+    async createExclusionConstraint(table: Table|string, exclusionConstraint: TableExclusion): Promise<void> {
+        throw new Error(`MySql does not support exclusion constraints.`);
+    }
+
+    /**
+     * Creates new exclusion constraints.
+     */
+    async createExclusionConstraints(table: Table|string, exclusionConstraints: TableExclusion[]): Promise<void> {
+        throw new Error(`MySql does not support exclusion constraints.`);
+    }
+
+    /**
+     * Drops a exclusion constraint.
+     */
+    async dropExclusionConstraint(table: Table|string, exclusionOrName: TableExclusion|string): Promise<void> {
+        throw new Error(`MySql does not support exclusion constraints.`);
+    }
+
+    /**
+     * Drops exclusion constraints.
+     */
+    async dropExclusionConstraints(table: Table|string, exclusionConstraints: TableExclusion[]): Promise<void> {
+        throw new Error(`MySql does not support exclusion constraints.`);
+    }
+
+
+
     // -------------------------------------------------------------------------
     // Protected Methods
     // -------------------------------------------------------------------------
 
     /**
-     * helper for createAndLoadSchemaTable. 
+     * helper for createAndLoadSchemaTable.
      * create schema object from schemas table column
      * @param type
-     * @param value 
+     * @param value
      */
     protected createExtendSchemaObject(
         table: string, type: string, value: string
@@ -1524,8 +1555,8 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
                 columnSchema.generator = RandomGenerator.uuid4;
             } else if (value == "increment") {
                 columnSchema.generatorStorategy = "increment";
-                // we automatically process increment generation storategy as uuid. 
-                // because spanner strongly discourage auto increment column. 
+                // we automatically process increment generation storategy as uuid.
+                // because spanner strongly discourage auto increment column.
                 // TODO: if there is request, implement auto increment somehow.
                 if (table !== "migrations") {
                     this.driver.connection.logger.log("warn", "column value generatorStorategy `increment` treated as `uuid` on spanner, due to performance reason.");
@@ -1590,7 +1621,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
     }
 
     /**
-     * helper for createAndLoadSchemaTable. 
+     * helper for createAndLoadSchemaTable.
      * load formatted object from schema table
      */
     protected async loadExtendSchemaTable(tableName: string): Promise<ObjectLiteral[]> {
@@ -1602,7 +1633,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
     }
 
     /**
-     * get query string to examine select/update/upsert/delete keys. 
+     * get query string to examine select/update/upsert/delete keys.
      * null means value contains all key elements already.
      */
     protected async examineKeys<Entity>(table: Table, qb: QueryBuilder<Entity>, keysOnly?: boolean): Promise<ObjectLiteral[]|any[]|null> {
@@ -1613,7 +1644,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
             - qb.expressionMap.parameters.qb_ids or qb.whereExpressionのIN(...)の中身（パースの必要あり)
             primary keyのカラムが２つ以上
             - qb.expressionMap.nativeParametersの["id_" + index1 + "_" + index2]みたいなところに格納されている
-            
+
             primary keyを完全には含まない場合
             entityを使わないupdate/deleteクエリ. とりあえずエラーを吐くが、将来的にはqb.whereExpressionとqb.parametersを使って
             下記のようなクエリを作りidを取得する.
@@ -1624,8 +1655,8 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         if (expressionMap.parameters.qb_ids) {
             // non numeric single primary key
             const pc = table.primaryColumns[0];
-            const keys = keysOnly ? 
-                expressionMap.parameters.qb_ids : 
+            const keys = keysOnly ?
+                expressionMap.parameters.qb_ids :
                 (expressionMap.parameters.qb_ids as any[]).map(e => {
                     return {
                         [pc.name]: e
@@ -1661,7 +1692,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         if (m = query.match(/IN\(([^)]+)\)/)) {
             const pc = table.primaryColumns[0];
             // parse IN statement (Number)
-            // TODO: descriminator column uses IN statement. what is descriminator column? 
+            // TODO: descriminator column uses IN statement. what is descriminator column?
             const parsed = m[1].split(",");
             const keys = keysOnly ? parsed : parsed.map(e => {
                 return {
@@ -1674,7 +1705,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         // not fast path. examine keys using where expression
         const idx = query.indexOf("WHERE");
         const sql = (
-            `SELECT ${table.primaryColumns.map((c) => c.name).join(',')} FROM ${qb.escapedMainTableName}` + 
+            `SELECT ${table.primaryColumns.map((c) => c.name).join(',')} FROM ${qb.escapedMainTableName}` +
             (idx >= 0 ? query.substring(idx) : "")
         );
         // run is both promisified
@@ -1686,11 +1717,11 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         if (!results || results.length <= 0) {
             return [];
         }
-        const keys = keysOnly ? 
-            (table.primaryColumns.length > 1 ? 
-                (results as ObjectLiteral[]).map(r => table.primaryColumns.map(pc => r[pc.name])) : 
+        const keys = keysOnly ?
+            (table.primaryColumns.length > 1 ?
+                (results as ObjectLiteral[]).map(r => table.primaryColumns.map(pc => r[pc.name])) :
                 (results as ObjectLiteral[]).map(r => r[table.primaryColumns[0].name])
-            ) : 
+            ) :
             results;
         this.driver.connection.logger.log("info", `queried keys ${JSON.stringify(keys)} by ${query} ${!!this.tx}`);
         return keys;
@@ -1701,8 +1732,8 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      * connect() should be already called before this function invoked.
      */
     protected request(
-        table: Table, 
-        method: "insert"|"update"|"upsert"|"deleteRows", 
+        table: Table,
+        method: "insert"|"update"|"upsert"|"deleteRows",
         ...args: any[]
     ): Promise<any> {
         if (this.driver.connection.options.logging) {
@@ -1738,10 +1769,10 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
                 }
                 const vss = this.verifyAndFillAutoGeneratedValues(
                     table, qb.expressionMap.valuesSet);
-                // NOTE: when transaction mode, callback (next args of vss) never called. 
-                // at transaction mode, this call just change queuedMutations_ property of this.tx, 
-                // and callback ignored. 
-                // then actual mutation will be done when commitTransaction is called. 
+                // NOTE: when transaction mode, callback (next args of vss) never called.
+                // at transaction mode, this call just change queuedMutations_ property of this.tx,
+                // and callback ignored.
+                // then actual mutation will be done when commitTransaction is called.
                 await this.request(table, 'insert', vss);
                 ok(vss);
             } catch (e) {
@@ -2013,7 +2044,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         if (index.isSpatial)
             indexType += "NULL_FILTERED ";
         if (index.isFulltext)
-            throw new Error(`NYI: spanner: index.isFulltext`); //indexType += "FULLTEXT "; 
+            throw new Error(`NYI: spanner: index.isFulltext`); //indexType += "FULLTEXT ";
         return `CREATE ${indexType}INDEX \`${index.name}\` ON ${this.escapeTableName(table)}(${columns})`;
     }
 
@@ -2050,7 +2081,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         const columnNames = foreignKey.columnNames.map(column => `\`${column}\``).join(",");
         const fkName = foreignKey.name || `${referencedColumnNames}By${foreignKey.columnNames.join()}`;
         let sql = `CREATE INDEX ${fkName} ON
-            ${this.escapeTableName(table.name)}\(${referencedColumnNames}, ${columnNames}\) 
+            ${this.escapeTableName(table.name)}\(${referencedColumnNames}, ${columnNames}\)
             INTERLEAVE IN ${this.escapeTableName(foreignKey.referencedTableName)}`;
         if (foreignKey.onDelete)
             sql += ` ON DELETE ${foreignKey.onDelete}`;
@@ -2089,7 +2120,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         }
         return splits.map(i => disableEscape ? i : `\`${i}\``).join(".");
     }
-    
+
     /**
      * Builds a part of query to create/change a column.
      */
@@ -2111,13 +2142,13 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         }
 
         // spanner
-        if (column.enum) 
+        if (column.enum)
             throw new Error(`NYI: spanner: column.enum`); // c += ` (${column.enum.map(value => "'" + value + "'").join(", ")})`;
 
         // spanner only supports utf8
-        if (column.charset && column.charset.toLowerCase().indexOf("utf8") >= 0)  
+        if (column.charset && column.charset.toLowerCase().indexOf("utf8") >= 0)
             throw new Error(`NYI: spanner: column.charset = ${column.charset}`); // c += ` CHARACTER SET "${column.charset}"`;
-        if (column.collation) 
+        if (column.collation)
             throw new Error(`NYI: spanner: column.collation`); // c += ` COLLATE "${column.collation}"`;
 
         if (!column.isNullable)
@@ -2125,7 +2156,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
 
         // explicit nullable modifier not supported. silently ignored.
         // if (column.isNullable) c += " NULL";
-        
+
         // primary key can be specified only at table creation
         // not error but does not take effect here.
         // if (column.isPrimary && !skipPrimary) c += " PRIMARY KEY";
@@ -2135,7 +2166,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         // if (column.isGenerated && column.generationStrategy === "increment") {
         // }
 
-        // does not support comment. 
+        // does not support comment.
         if (column.comment)
             throw new Error(`NYI: spanner: column.comment`); //c += ` COMMENT '${column.comment}'`;
 
@@ -2146,7 +2177,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
                 c += `OPTIONS (allow_commit_timestamp=true)`
             }
         }
-        
+
         // does not support on update
         if (column.onUpdate)
             throw new Error(`NYI: spanner: column.onUpdate`); //c += ` ON UPDATE ${column.onUpdate}`;
@@ -2217,7 +2248,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         const qb = this.connection.manager
             .createQueryBuilder(this)
             .update(this.driver.options.schemaTableName || "schemas")
-            .set({table, column, type, value})
+            .set(<any>{table, column, type, value})
             .where(`\`table\` = '${table}' AND \`column\` = '${column}' AND \`type\` = '${type}'`);
         return this.upsert(qb);
     }

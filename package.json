@@ -79,6 +79,7 @@
   "dependencies": {
     "@google-cloud/spanner": "^3.1.0",
     "@types/stack-trace": "0.0.29",
+    "@types/yargs": "^12.0.0",
     "@types/zen-observable": "^0.8.0",
     "app-root-path": "^2.0.1",
     "buffer": "^5.1.0",
