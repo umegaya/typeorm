@@ -441,7 +441,7 @@ export class SpannerDriver implements Driver {
                 projectId: this.options.projectId,
             });
             const instance = client.instance(this.options.instanceId);
-            const database = instance.database(this.options.database);
+            const database = instance.database(this.options.database, this.options.sessonPool);
             await database.get({autoCreate: true});
             this.spanner = {
                 client, instance,
