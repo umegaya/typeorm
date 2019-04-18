@@ -694,14 +694,14 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
             throw new Error(`Column "${oldColumnOrName}" was not found in the "${table.name}" table.`);
 
         if (oldColumn.name !== newColumn.name) {
-            throw new Error(`NYI: spanner: changeColumn: change column name ${oldColumn.name} => ${newColumn.name}`);
+            throw new Error(`NYI: spanner: changeColumn ${oldColumn.name}: change column name ${oldColumn.name} => ${newColumn.name}`);
         }
 
         if (oldColumn.type !== newColumn.type) {
             // - Change a STRING column to a BYTES column or a BYTES column to a STRING column.
             if (!(oldColumn.type === "string" && newColumn.type === "bytes") &&
                 !(oldColumn.type === "bytes" && newColumn.type === "string")) {
-                throw new Error(`NYI: spanner: changeColumn: change column type ${oldColumn.type} => ${newColumn.type}`);
+                throw new Error(`NYI: spanner: changeColumn ${oldColumn.name}: change column type ${oldColumn.type} => ${newColumn.type}`);
             }
         }
 
@@ -709,7 +709,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
             // - Increase or decrease the length limit for a STRING or BYTES type (including to MAX)
             if (!(oldColumn.type === "string" && newColumn.type === "bytes") &&
                 !(oldColumn.type === "bytes" && newColumn.type === "string")) {
-                throw new Error(`NYI: spanner: changeColumn: change column type ${oldColumn.type} => ${newColumn.type}`);
+                throw new Error(`NYI: spanner: changeColumn ${oldColumn.name}: change column type ${oldColumn.type} => ${newColumn.type}`);
             }
             // TODO: implement following check.
             // `unless it is a primary key column inherited by one or more child tables.`
@@ -720,7 +720,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
             if (clonedTable.indices.find(index => {
                 return index.columnNames.length === 1 && index.columnNames[0] === newColumn.name;
             })) {
-                throw new Error(`NYI: spanner: changeColumn: change nullable for ${oldColumn.name}, which is indexed`);
+                throw new Error(`NYI: spanner: changeColumn ${oldColumn.name}: change nullable for ${oldColumn.name}, which is indexed`);
             }
         }
 
@@ -728,7 +728,8 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         if (oldColumn.default !== newColumn.default) {
             if (newColumn.default !== SpannerColumnUpdateWithCommitTimestamp &&
                 oldColumn.default !== SpannerColumnUpdateWithCommitTimestamp) {
-                throw new Error(`NYI: spanner: changeColumn: set default ${typeof oldColumn.default} => ${typeof newColumn.default}`);
+                console.log("oldColumn:" + JSON.stringify(oldColumn));
+                throw new Error(`NYI: spanner: changeColumn ${oldColumn.name}: set default ${oldColumn.default} => ${newColumn.default}`);
 
             }
         }
@@ -746,7 +747,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
             oldColumn.isArray !== newColumn.isArray
             // isGenerated is managed by schemas table
         ) {
-            throw new Error(`NYI: spanner: changeColumn: not supported change ${JSON.stringify(oldColumn)} => ${JSON.stringify(newColumn)}`);
+            throw new Error(`NYI: spanner: changeColumn ${oldColumn.name}: not supported change ${JSON.stringify(oldColumn)} => ${JSON.stringify(newColumn)}`);
         }
 
         // if actually changed, store SQLs
