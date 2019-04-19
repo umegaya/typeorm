@@ -112,10 +112,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
 
         this.isTransactionActive = true;
         return this.connect().then(async (db) => {
-            this.tx = (await this.databaseConnection.getTransaction({
-                //readOnly: true,
-                strong: !!isolationLevel
-            }))[0];
+            this.tx = (await this.databaseConnection.getTransaction())[0];
         });
     }
 
@@ -176,21 +173,24 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
     ): Promise<T> {
         return new Promise<T>((res, rej) => {
             this.connect().then(async (db) => {
-                this.databaseConnection.runTransaction({
-                    // TODO: how specify these options?
-                    //readOnly: true,
-                    strong: !!isolationLevel
-                }, async (err: Error, tx: any) => {
+                this.databaseConnection.runTransaction(
+                async (err: Error, tx: any) => {
                     if (err) {
-                        rej(err);
+                        tx.rollback((err2: Error) => {
+                            if (err2) {
+                                rej(err2);
+                            } else {
+                                rej(err);
+                            }
+                        });
                         return;
                     }
                     this.tx = tx;
                     this.isTransactionActive = true;
                     const r = await runInTransaction(this.manager);
-                    tx.commit((err: Error, _: any) => {
-                        if (err) {
-                            rej(err)
+                    tx.commit((err2: Error, _: any) => {
+                        if (err2) {
+                            rej(err2);
                         } else {
                             this.tx = null;
                             this.isTransactionActive = false;

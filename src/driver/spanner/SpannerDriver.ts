@@ -852,7 +852,7 @@ export class SpannerDriver implements Driver {
                 || tableColumn.onUpdate !== columnMetadata.onUpdate
                 || tableColumn.isPrimary !== columnMetadata.isPrimary
                 || tableColumn.isNullable !== columnMetadata.isNullable
-                || tableColumn.isUnique !== this.normalizeIsUnique(columnMetadata)
+                || tableColumn.isUnique !== this.normalizeIsUnique(columnMetadata);
                 // isGenerated and generationStrategy is alway sync'ed to latest definition, via extendSchema repository
                 // || (columnMetadata.generationStrategy !== "uuid" && tableColumn.isGenerated !== columnMetadata.isGenerated);
         });
