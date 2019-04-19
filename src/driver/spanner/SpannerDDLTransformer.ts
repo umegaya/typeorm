@@ -176,8 +176,15 @@ export class SpannerDDLTransformer {
                 return `string(${ast.length})`;
             }
         };
+        const intTypeChecker = (ast: any) => {
+            if (ast.datatype === 'tinyint') {
+                return "bool";
+            } else {
+                return "int64";
+            }
+        }
         const dataTypeMap: { [id:string]:string|DataTypeChecker|undefined } = {
-            O_INTEGER_DATATYPE: "int64",
+            O_INTEGER_DATATYPE: intTypeChecker,
             O_FIXED_POINT_DATATYPE: "float64",
             O_FLOATING_POINT_DATATYPE: "float64",
             O_BIT_DATATYPE: "bool",
