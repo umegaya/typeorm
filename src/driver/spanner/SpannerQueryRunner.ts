@@ -176,27 +176,27 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
                 this.databaseConnection.runTransaction(
                 async (err: Error, tx: any) => {
                     if (err) {
-                        tx.rollback((err2: Error) => {
-                            if (err2) {
-                                rej(err2);
-                            } else {
-                                rej(err);
-                            }
-                        });
+                        rej(err);
                         return;
                     }
                     this.tx = tx;
                     this.isTransactionActive = true;
-                    const r = await runInTransaction(this.manager);
-                    tx.commit((err2: Error, _: any) => {
-                        if (err2) {
-                            rej(err2);
-                        } else {
-                            this.tx = null;
-                            this.isTransactionActive = false;
-                            res(r);
-                        }
-                    });
+                    try {
+                        const r = await runInTransaction(this.manager);
+                        tx.commit((err2: Error, _: any) => {
+                            if (err2) {
+                                rej(err2);
+                            } else {
+                                this.tx = null;
+                                this.isTransactionActive = false;
+                                res(r);
+                            }
+                        });
+                    } catch (e) {
+                        tx.rollback((_: Error) => {
+                            rej(e);
+                        });
+                    }
                 });
             });
         });
