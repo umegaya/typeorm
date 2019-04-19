@@ -1,5 +1,5 @@
 import {
-    SpannerExtendSchemaSources, 
+    SpannerExtendSchemaSources,
 } from "./SpannerRawTypes";
 
 type ASTTransformer = (ast: any, extendSchemas: SpannerExtendSchemaSources) => string;
@@ -42,7 +42,7 @@ export class SpannerDDLTransformer {
         const set = <ASTTransformerSet><any>this;
         return (set[ast.id] || set["transform"]).call(this, ast.def, extendSchemas);
     }
-    // common 
+    // common
     protected addExtendSchema(extendSchemas: SpannerExtendSchemaSources, type: string, value: string) {
         const key = this.scopedColumn || this.scopedIndex;
         if (!key) {
@@ -69,10 +69,10 @@ export class SpannerDDLTransformer {
     // P_CREATE_TABLE: default
     protected P_CREATE_TABLE_COMMON(ast: any, extendSchemas: SpannerExtendSchemaSources): string {
         this.scopedTable = ast.table;
-        return `CREATE TABLE ${ast.table} ` + 
-            `(${this.P_CREATE_TABLE_CREATE_DEFINITIONS(ast.columnsDef.def, extendSchemas)})` + 
-            `${this.P_CREATE_TABLE_OPTIONS(ast.tableOptions.def, extendSchemas)} ` + 
-            `${this.primaryKeyDefinitionHelper()};` + 
+        return `CREATE TABLE ${ast.table} ` +
+            `(${this.P_CREATE_TABLE_CREATE_DEFINITIONS(ast.columnsDef.def, extendSchemas)})` +
+            `${this.P_CREATE_TABLE_OPTIONS(ast.tableOptions.def, extendSchemas)} ` +
+            `${this.primaryKeyDefinitionHelper()};` +
             `${this.indexDefinitionsHelper()}`;
     }
     protected P_CREATE_TABLE_CREATE_DEFINITIONS(ast: any, extendSchemas: SpannerExtendSchemaSources): string {
@@ -81,7 +81,7 @@ export class SpannerDDLTransformer {
     protected P_CREATE_TABLE_CREATE_DEFINITION(ast: any, extendSchemas: SpannerExtendSchemaSources): string {
         if (ast.column) {
             this.setScopedColumn(ast.column.name);
-            return `${ast.column.name} ${this.O_DATATYPE(ast.column.def.datatype, extendSchemas)} ` + 
+            return `${ast.column.name} ${this.O_DATATYPE(ast.column.def.datatype, extendSchemas)} ` +
                 `${ast.column.def.columnDefinition.map((cd: any) => this.O_COLUMN_DEFINITION(cd.def, extendSchemas)).join(' ')}`;
         } else if (ast.primaryKey) {
             this.primaryKeyColumns = this.primaryKeyColumns
@@ -129,8 +129,8 @@ export class SpannerDDLTransformer {
     }
 
     protected O_ALTER_TABLE_SPEC(ast: any, extendSchemas: SpannerExtendSchemaSources): string {
-        const actionSqlMap: { 
-            [action: string]: (ast: any, extendSchemas: SpannerExtendSchemaSources) => string 
+        const actionSqlMap: {
+            [action: string]: (ast: any, extendSchemas: SpannerExtendSchemaSources) => string
         } = {
             addColumn: this.O_ALTER_TABLE_SPEC_addColumn,
             dropColumn: this.O_ALTER_TABLE_SPEC_dropColumn,
@@ -144,7 +144,7 @@ export class SpannerDDLTransformer {
         return actionSqlMap[ast.def.action].call(this, ast.def, extendSchemas);
     }
     protected O_ALTER_TABLE_SPEC_addColumn(ast: any, extendSchemas: SpannerExtendSchemaSources): string {
-        return `ALTER TABLE ${this.scopedTable} ADD COLUMN ${ast.name} ` + 
+        return `ALTER TABLE ${this.scopedTable} ADD COLUMN ${ast.name} ` +
             this.alterColumnDefinitionHelper(ast, extendSchemas);
     }
     protected O_ALTER_TABLE_SPEC_dropColumn(ast: any, extendSchemas: SpannerExtendSchemaSources): string {
@@ -152,7 +152,7 @@ export class SpannerDDLTransformer {
         return `ALTER TABLE ${this.scopedTable} DROP COLUMN ${ast.column}`;
     }
     protected O_ALTER_TABLE_SPEC_changeColumn(ast: any, extendSchemas: SpannerExtendSchemaSources): string {
-        return `ALTER TABLE ${this.scopedTable} ALTER COLUMN ${[ast.column, ast.newName].filter((e: string) => !!e).join(' ')} ` + 
+        return `ALTER TABLE ${this.scopedTable} ALTER COLUMN ${[ast.column, ast.newName].filter((e: string) => !!e).join(' ')} ` +
             this.alterColumnDefinitionHelper(ast, extendSchemas);
     }
     protected O_ALTER_TABLE_SPEC_addIndex(ast: any, extendSchemas: SpannerExtendSchemaSources): string {
@@ -168,7 +168,7 @@ export class SpannerDDLTransformer {
         return `DROP INDEX ${ast.index}`;
     }
     protected O_DATATYPE(ast: any, extendSchemas: SpannerExtendSchemaSources): string {
-        // handle all O_XXXXX_DATATYPE 
+        // handle all O_XXXXX_DATATYPE
         const lengthTypeChecker = (ast: any) => {
             if (ast.datatype.indexOf("blob") >= 0 || ast.datatype.indexOf("binary") >= 0) {
                 return `bytes(${ast.length})`;
@@ -225,8 +225,8 @@ export class SpannerDDLTransformer {
     // helpers
     protected alterColumnDefinitionHelper(ast: any, extendSchemas: SpannerExtendSchemaSources): string {
         this.setScopedColumn(ast.name);
-        return `${this.O_DATATYPE(ast.datatype, extendSchemas)} ` + 
-        `${this.O_COLUMN_DEFINITION(ast.columnDefinition, extendSchemas)}` + 
+        return `${this.O_DATATYPE(ast.datatype, extendSchemas)} ` +
+        `${this.O_COLUMN_DEFINITION(ast.columnDefinition, extendSchemas)}` +
         (ast.position ? (ast.position.after ? `AFTER ${ast.position.after}` : "FIRST") : "");
     }
     protected primaryKeyDefinitionHelper(): string {
@@ -236,14 +236,14 @@ export class SpannerDDLTransformer {
         return this.indices.map(idx => this.indexDefinitionHelper(idx)).join(';');
     }
     protected indexDefinitionHelper(idx: Index): string {
-        return `CREATE ` + 
-                (typeof(idx.type) === "string" ? idx.type : 
+        return `CREATE ` +
+                (typeof(idx.type) === "string" ? idx.type :
                 `${[
-                    idx.type.unique ? "UNIQUE" : undefined, 
-                    idx.type.sparse ? "NULL_FILTERED" : undefined, 
+                    idx.type.unique ? "UNIQUE" : undefined,
+                    idx.type.sparse ? "NULL_FILTERED" : undefined,
                     "INDEX"
-                ].filter((e: string) => !!e).join(' ')}`) + 
-                ` ${idx.name} ` + 
+                ].filter((e: string) => !!e).join(' ')}`) +
+                ` ${idx.name} ` +
                 `ON ${idx.table}(${this.indexColumnsHelper(idx.columns)})`;
     }
     protected indexHelper(index: any, type: IndexType): Index {

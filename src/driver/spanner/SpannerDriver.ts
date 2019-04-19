@@ -58,13 +58,13 @@ export class SpannerDriver implements Driver {
     } | null;
 
     /**
-     * because spanner's schema change cannot be done transactionally, 
+     * because spanner's schema change cannot be done transactionally,
      * we ignore start/commit/rollback Transaction during schema change phase
      */
     enableTransaction: boolean;
 
     /**
-     * ddl parser to use mysql migrations as spanner ddl. 
+     * ddl parser to use mysql migrations as spanner ddl.
      * https://github.com/duartealexf/sql-ddl-to-json-schema
      */
     ddlParser: any;
@@ -203,8 +203,8 @@ export class SpannerDriver implements Driver {
     // static Public Methods (SpannerDriver specific)
     // -------------------------------------------------------------------------
     static updateTableWithExtendSchema(
-        db: SpannerDatabase, 
-        extendSchemas: SpannerExtendSchemas, 
+        db: SpannerDatabase,
+        extendSchemas: SpannerExtendSchemas,
         ignoreColumnNotFound: boolean
     ) {
         db.schemas = extendSchemas;
@@ -232,7 +232,7 @@ export class SpannerDriver implements Driver {
     static randomInt64(): string {
         const bytes = SpannerUtil.randomBytes(8);
         const as_numbers: number[] = [];
-        // TODO: is there any better(faster) way? 
+        // TODO: is there any better(faster) way?
         for (const b of bytes) {
             as_numbers.push(b);
         }
@@ -262,7 +262,7 @@ export class SpannerDriver implements Driver {
         await this.loadTables(this.getSchemaTableName());
         return this.spanner.database.tables;
     }
-    // get list of table names which has actual Table but not metadata. 
+    // get list of table names which has actual Table but not metadata.
     // (eg. migrations)
     systemTableNames(): string[] {
         return [
@@ -270,7 +270,7 @@ export class SpannerDriver implements Driver {
             "query-result-cache"
         ];
     }
-    // get list of tables which has actual Table but not metadata. 
+    // get list of tables which has actual Table but not metadata.
     // (eg. migrations)
     async getSystemTables(): Promise<Table[]> {
         if (!this.spanner) {
@@ -289,7 +289,7 @@ export class SpannerDriver implements Driver {
         return this.spanner.database.schemas || {};
     }
     /**
-     * create and drop database of arbiter name. 
+     * create and drop database of arbiter name.
      * if name equals this.options.database, change driver state accordingly
      */
     createDatabase(name: string): Promise<any> {
@@ -313,7 +313,7 @@ export class SpannerDriver implements Driver {
         return this.spanner.instance.database(name).delete();
     }
     /**
-     * set tables object cache. 
+     * set tables object cache.
      */
     setTable(table: Table) {
         if (!this.spanner) {
@@ -344,7 +344,7 @@ export class SpannerDriver implements Driver {
                     if (this.getSchemaTableName() == tableName) {
                         this.spanner.database.schemas = null;
                     }
-                }        
+                }
             });
             console.log(`deleted table[${tableName}]`);
         } else {
@@ -353,7 +353,7 @@ export class SpannerDriver implements Driver {
     }
     /**
      * load tables. cache them into this.spanner.databases too.
-     * @param tableNames table names which need to load. 
+     * @param tableNames table names which need to load.
      */
     loadTables(tableNames: string[]|Table|string): Promise<Table[]> {
         if (!this.spanner) {
@@ -365,7 +365,7 @@ export class SpannerDriver implements Driver {
             tableNames = [tableNames.name];
         }
         const database = this.spanner.database;
-        return (async () => {        
+        return (async () => {
             const tables = await Promise.all(tableNames.map(async (tableName: string) => {
                 let [dbname, name] = tableName.split(".");
                 if (!name) {
@@ -398,8 +398,8 @@ export class SpannerDriver implements Driver {
             throw new Error('connect() driver first');
         }
         const database = this.spanner.database;
-        if (!database.schemas || 
-            !database.schemas[tableName] || 
+        if (!database.schemas ||
+            !database.schemas[tableName] ||
             !database.schemas[tableName][columnName]) {
             return undefined;
         }
@@ -458,7 +458,7 @@ export class SpannerDriver implements Driver {
 
     /**
      * Makes any action after connection (e.g. create extensions in Postgres driver).
-     * here update extend schema. 
+     * here update extend schema.
      */
     afterConnect(): Promise<void> {
         return (async () => {
@@ -531,7 +531,7 @@ export class SpannerDriver implements Driver {
      */
     escapeQueryWithParameters(sql: string, parameters: ObjectLiteral, nativeParameters: ObjectLiteral): [string, any[]] {
         // written values (for update) are likely to put in nativeParameter
-        // OTOH read values (for select, update, delete) are likely to put in parameter. 
+        // OTOH read values (for select, update, delete) are likely to put in parameter.
         if (!parameters || !Object.keys(parameters).length)
             return [sql, [nativeParameters]];
 
@@ -591,13 +591,13 @@ export class SpannerDriver implements Driver {
         if (value === null || value === undefined)
             return value;
 
-        if (type === "timestamp" || 
-            type === "date" || 
+        if (type === "timestamp" ||
+            type === "date" ||
             type === Date) {
             if (typeof(value) === 'number') {
-                // convert millisecond numeric timestamp to date object. 
+                // convert millisecond numeric timestamp to date object.
                 // because @google/spanner does not accept it
-                return new Date(value); 
+                return new Date(value);
             }
             return DateUtils.mixedDateToDate(value);
 
@@ -608,7 +608,7 @@ export class SpannerDriver implements Driver {
             return DateUtils.simpleJsonToString(value);
         } */ else if (
             type == Number ||
-            type == String || 
+            type == String ||
             type == Boolean ||
             type == "int64" ||
             type == "float64" ||
@@ -650,7 +650,7 @@ export class SpannerDriver implements Driver {
             column.type.toString().indexOf("dec") !== -1) {
             return "float64";
         }
-        else if (column.type === String || 
+        else if (column.type === String ||
             column.type.toString().indexOf("char") !== -1 ||
             column.type.toString().indexOf("text") !== -1) {
             return "string";
@@ -820,10 +820,10 @@ export class SpannerDriver implements Driver {
                console.log("generatedType:", tableColumn.generatedType, columnMetadata.generatedType);
             // if (tableColumn.comment !== columnMetadata.comment)
                // console.log("comment:", tableColumn.comment, columnMetadata.comment);
-            if (tableColumn.default !== columnMetadata.default)
-               console.log("default:", tableColumn.default, columnMetadata.default);
-            if (!this.compareDefaultValues(this.normalizeDefault(columnMetadata), tableColumn.default))
-               console.log("default changed:", !this.compareDefaultValues(this.normalizeDefault(columnMetadata), tableColumn.default));
+            // if (tableColumn.default !== columnMetadata.default)
+               // console.log("default:", tableColumn.default, columnMetadata.default);
+            // if (!this.compareDefaultValues(this.normalizeDefault(columnMetadata), tableColumn.default))
+               // console.log("default changed:", !this.compareDefaultValues(this.normalizeDefault(columnMetadata), tableColumn.default));
             if (tableColumn.onUpdate !== columnMetadata.onUpdate)
                console.log("onUpdate:", tableColumn.onUpdate, columnMetadata.onUpdate);
             if (tableColumn.isPrimary !== columnMetadata.isPrimary)
@@ -832,12 +832,12 @@ export class SpannerDriver implements Driver {
                console.log("isNullable:", tableColumn.isNullable, columnMetadata.isNullable);
             if (tableColumn.isUnique !== this.normalizeIsUnique(columnMetadata))
                console.log("isUnique:", tableColumn.isUnique, this.normalizeIsUnique(columnMetadata));
-            if (tableColumn.isGenerated !== columnMetadata.isGenerated)
-               console.log("isGenerated:", tableColumn.isGenerated, columnMetadata.isGenerated);
-            console.log("=========================================="); */
+            // if (tableColumn.isGenerated !== columnMetadata.isGenerated)
+               // console.log("isGenerated:", tableColumn.isGenerated, columnMetadata.isGenerated);
+            console.log("=========================================="); //*/
 
             return tableColumn.name !== columnMetadata.databaseName
-                || tableColumn.type.toLowerCase() !== this.normalizeType(columnMetadata).toLowerCase() 
+                || tableColumn.type.toLowerCase() !== this.normalizeType(columnMetadata).toLowerCase()
                 || tableColumn.length !== columnMetadata.length
                 || tableColumn.width !== columnMetadata.width
                 // || tableColumn.precision !== columnMetadata.precision : spanner has no precision specifier
@@ -847,12 +847,14 @@ export class SpannerDriver implements Driver {
                 || tableColumn.asExpression !== columnMetadata.asExpression
                 || tableColumn.generatedType !== columnMetadata.generatedType
                 // || tableColumn.comment !== columnMetadata.comment // todo
-                || !this.compareDefaultValues(this.normalizeDefault(columnMetadata), tableColumn.default)
+                // default value is alway sync'ed to latest definition, via extendSchema repository
+                // || !this.compareDefaultValues(this.normalizeDefault(columnMetadata), tableColumn.default)
                 || tableColumn.onUpdate !== columnMetadata.onUpdate
                 || tableColumn.isPrimary !== columnMetadata.isPrimary
                 || tableColumn.isNullable !== columnMetadata.isNullable
                 || tableColumn.isUnique !== this.normalizeIsUnique(columnMetadata)
-                || (columnMetadata.generationStrategy !== "uuid" && tableColumn.isGenerated !== columnMetadata.isGenerated);
+                // isGenerated and generationStrategy is alway sync'ed to latest definition, via extendSchema repository
+                // || (columnMetadata.generationStrategy !== "uuid" && tableColumn.isGenerated !== columnMetadata.isGenerated);
         });
 
         //console.log('filtered', filtered);
@@ -861,8 +863,8 @@ export class SpannerDriver implements Driver {
 
     /**
      * Returns true if driver supports RETURNING / OUTPUT statement.
-     * for Spanner, no auto assigned value (default/generatedStorategy(uuid, increment)) at database side. 
-     * every such values are defined in client memory, so just return insertValue. 
+     * for Spanner, no auto assigned value (default/generatedStorategy(uuid, increment)) at database side.
+     * every such values are defined in client memory, so just return insertValue.
      */
     isReturningSqlSupported(): boolean {
         return true;
@@ -946,10 +948,10 @@ export class SpannerDriver implements Driver {
             return {
                 typeName: tm[1],
                 isArray: false,
-                length: typeDefault && typeDefault.length && 
+                length: typeDefault && typeDefault.length &&
                     tm[2] == typeDefault.length.toString() ? undefined : tm[2]
             };
-        } 
+        }
         const am = typeName.match(/([^<]+)<(\w+)>/);
         if (am) {
             return {
@@ -972,7 +974,7 @@ export class SpannerDriver implements Driver {
         for (const stmt of schemas[0]) {
             // console.log('stmt', stmt);
             // stmt =~ /CREATE ${tableName} (IF NOT EXISTS) (${columns}) ${interleaves}/
-            /* example. 
+            /* example.
             CREATE TABLE migrations (
                 id STRING(255) NOT NULL,
                 timestamp TIMESTAMP NOT NULL,
@@ -1040,7 +1042,7 @@ export class SpannerDriver implements Driver {
                     throw new Error("invalid ddl format:" + stmt);
                 }
             }
-            const tableName: string = m[1]; 
+            const tableName: string = m[1];
             const columnStmts: string = m[2];
             const indexStmts: string = m[3];
             // parse columns
@@ -1060,7 +1062,7 @@ export class SpannerDriver implements Driver {
                     isPrimary: false, // set afterwards
                     isUnique: false, // set afterwards
                     isArray: type.isArray,
-                    length: type.length ? type.length : undefined, 
+                    length: type.length ? type.length : undefined,
                     default: undefined, // set in updateTableWithExtendSchema
                     generationStrategy: undefined, // set in updateTableWithExtendSchema
                 });
