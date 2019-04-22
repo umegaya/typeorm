@@ -349,7 +349,7 @@ export class RdbmsSchemaBuilder implements SchemaBuilder {
 
                 return table.name === fullTableName;
             });
-            if (existTable) 
+            if (existTable)
                 return;
 
             this.connection.logger.logSchemaBuild(`creating a new table: ${metadata.tablePath}`);

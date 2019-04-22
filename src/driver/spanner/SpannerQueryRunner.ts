@@ -28,6 +28,7 @@ import {TableCheck} from "../../schema-builder/table/TableCheck";
 import {IsolationLevel} from "../types/IsolationLevel";
 import {EntityManager} from "../../entity-manager/EntityManager";
 import {QueryBuilder} from "../../query-builder/QueryBuilder";
+import {QueryExpressionMap} from "../../query-builder/QueryExpressionMap";
 import {ObjectLiteral} from "../../common/ObjectLiteral";
 import {TableExclusion} from "../../schema-builder/table/TableExclusion";
 
@@ -575,43 +576,17 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         const downQueries: string[] = [];
         const skipColumnLevelPrimary = clonedTable.primaryColumns.length > 0;
 
-        upQueries.push(`ALTER TABLE ${this.escapeTableName(table)} ADD ${this.buildCreateColumnSql(column, skipColumnLevelPrimary, false)}`);
+        upQueries.push(`ALTER TABLE ${this.escapeTableName(table)} ADD ${this.buildCreateColumnSql(column, { skipPrimary: skipColumnLevelPrimary, skipOptions: true })}`);
         downQueries.push(`ALTER TABLE ${this.escapeTableName(table)} DROP COLUMN \`${column.name}\``);
+        if (SpannerQueryRunner.needColumnOptions(column)) {
+            upQueries.push(`ALTER TABLE ${this.escapeTableName(table)} ALTER COLUMN \`${column.name}\` ${this.buildSetColumnOptionsSql(column)}`);
+            downQueries.push(`ALTER TABLE ${this.escapeTableName(table)} ALTER COLUMN \`${column.name}\` ${this.buildSetColumnOptionsSql(column, true)}`);
+        }
 
         // create or update primary key constraint
         if (column.isPrimary) {
             // TODO: re-create table
             throw new Error(`NYI: spanner: addColumn column.isPrimary`);
-            /*
-            // if we already have generated column, we must temporary drop AUTO_INCREMENT property.
-            const generatedColumn = clonedTable.columns.find(column => column.isGenerated && column.generationStrategy === "increment");
-            if (generatedColumn) {
-                const nonGeneratedColumn = generatedColumn.clone();
-                nonGeneratedColumn.isGenerated = false;
-                nonGeneratedColumn.generationStrategy = undefined;
-                upQueries.push(`ALTER TABLE ${this.escapeTableName(table)} CHANGE \`${column.name}\` ${this.buildCreateColumnSql(nonGeneratedColumn, true)}`);
-                downQueries.push(`ALTER TABLE ${this.escapeTableName(table)} CHANGE \`${nonGeneratedColumn.name}\` ${this.buildCreateColumnSql(column, true)}`);
-            }
-
-            const primaryColumns = clonedTable.primaryColumns;
-            let columnNames = primaryColumns.map(column => `\`${column.name}\``).join(", ");
-            upQueries.push(`ALTER TABLE ${this.escapeTableName(table)} DROP PRIMARY KEY`);
-            downQueries.push(`ALTER TABLE ${this.escapeTableName(table)} ADD PRIMARY KEY (${columnNames})`);
-
-            primaryColumns.push(column);
-            columnNames = primaryColumns.map(column => `\`${column.name}\``).join(", ");
-            upQueries.push(`ALTER TABLE ${this.escapeTableName(table)} ADD PRIMARY KEY (${columnNames})`);
-            downQueries.push(`ALTER TABLE ${this.escapeTableName(table)} DROP PRIMARY KEY`);
-
-            // if we previously dropped AUTO_INCREMENT property, we must bring it back
-            if (generatedColumn) {
-                const nonGeneratedColumn = generatedColumn.clone();
-                nonGeneratedColumn.isGenerated = false;
-                nonGeneratedColumn.generationStrategy = undefined;
-                upQueries.push(`ALTER TABLE ${this.escapeTableName(table)} CHANGE \`${nonGeneratedColumn.name}\` ${this.buildCreateColumnSql(column, true)}`);
-                downQueries.push(`ALTER TABLE ${this.escapeTableName(table)} CHANGE \`${column.name}\` ${this.buildCreateColumnSql(nonGeneratedColumn, true)}`);
-            }
-            */
         }
 
         // create column index
@@ -653,22 +628,6 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      */
     async renameColumn(tableOrName: Table|string, oldTableColumnOrName: TableColumn|string, newTableColumnOrName: TableColumn|string): Promise<void> {
         throw new Error(`NYI: spanner: renameColumn. you can remove column first, then create with the same name.`);
-        /*
-        const table = tableOrName instanceof Table ? tableOrName : await this.getCachedTable(tableOrName);
-        const oldColumn = oldTableColumnOrName instanceof TableColumn ? oldTableColumnOrName : table.columns.find(c => c.name === oldTableColumnOrName);
-        if (!oldColumn)
-            throw new Error(`Column "${oldTableColumnOrName}" was not found in the "${table.name}" table.`);
-
-        let newColumn: TableColumn|undefined = undefined;
-        if (newTableColumnOrName instanceof TableColumn) {
-            newColumn = newTableColumnOrName;
-        } else {
-            newColumn = oldColumn.clone();
-            newColumn.name = newTableColumnOrName;
-        }
-
-        await this.changeColumn(table, oldColumn, newColumn);
-        */
     }
 
     /**
@@ -724,16 +683,6 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
             }
         }
 
-        // - Enable or disable commit timestamps in value and primary key columns.
-        if (oldColumn.default !== newColumn.default) {
-            if (newColumn.default !== SpannerColumnUpdateWithCommitTimestamp &&
-                oldColumn.default !== SpannerColumnUpdateWithCommitTimestamp) {
-                console.log("oldColumn:" + JSON.stringify(oldColumn));
-                throw new Error(`NYI: spanner: changeColumn ${oldColumn.name}: set default ${oldColumn.default} => ${newColumn.default}`);
-
-            }
-        }
-
         // any other invalid changes
         if (oldColumn.isPrimary !== newColumn.isPrimary ||
             oldColumn.asExpression !== newColumn.asExpression ||
@@ -752,184 +701,16 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
 
         // if actually changed, store SQLs
         if (this.isColumnChanged(oldColumn, newColumn, true)) {
-            upQueries.push(`ALTER TABLE ${this.escapeTableName(table)} ALTER COLUMN \`${oldColumn.name}\` ${this.buildCreateColumnSql(newColumn, true)}`);
-            downQueries.push(`ALTER TABLE ${this.escapeTableName(table)} ALTER COLUMN \`${newColumn.name}\` ${this.buildCreateColumnSql(oldColumn, true)}`);
+            upQueries.push(`ALTER TABLE ${this.escapeTableName(table)} ALTER COLUMN ${this.buildCreateColumnSql(newColumn, { skipPrimary: true, skipOptions: true })}`);
+            downQueries.push(`ALTER TABLE ${this.escapeTableName(table)} ALTER COLUMN ${this.buildCreateColumnSql(oldColumn, { skipPrimary: true, skipOptions: true })}`);
+        }
+        if (SpannerQueryRunner.isColumnOptionsChanged(oldColumn, newColumn)) {
+            upQueries.push(`ALTER TABLE ${this.escapeTableName(table)} ALTER COLUMN \`${newColumn.name}\` SET OPTIONS (${this.buildSetColumnOptionsSql(newColumn)})`);
+            downQueries.push(`ALTER TABLE ${this.escapeTableName(table)} ALTER COLUMN \`${oldColumn.name}\` SET OPTIONS (${this.buildSetColumnOptionsSql(oldColumn)})`);
         }
 
         await this.executeQueries(upQueries, downQueries);
         this.replaceCachedTable(table, clonedTable);
-
-
-        /*
-        if ((newColumn.isGenerated !== oldColumn.isGenerated && newColumn.generationStrategy !== "uuid")
-            || oldColumn.type !== newColumn.type
-            || oldColumn.length !== newColumn.length
-            || oldColumn.generatedType !== newColumn.generatedType) {
-            await this.dropColumn(table, oldColumn);
-            await this.addColumn(table, newColumn);
-
-            // update cloned table
-            clonedTable = table.clone();
-
-        } else {
-            if (newColumn.name !== oldColumn.name) {
-                // We don't change any column properties, just rename it.
-                upQueries.push(`ALTER TABLE ${this.escapeTableName(table)} CHANGE \`${oldColumn.name}\` \`${newColumn.name}\` ${this.buildCreateColumnSql(oldColumn, true, true)}`);
-                downQueries.push(`ALTER TABLE ${this.escapeTableName(table)} CHANGE \`${newColumn.name}\` \`${oldColumn.name}\` ${this.buildCreateColumnSql(oldColumn, true, true)}`);
-
-                // rename index constraints
-                clonedTable.findColumnIndices(oldColumn).forEach(index => {
-                    // build new constraint name
-                    index.columnNames.splice(index.columnNames.indexOf(oldColumn.name), 1);
-                    index.columnNames.push(newColumn.name);
-                    const columnNames = index.columnNames.map(column => `\`${column}\``).join(", ");
-                    const newIndexName = this.connection.namingStrategy.indexName(clonedTable, index.columnNames, index.where);
-
-                    // build queries
-                    let indexType = "";
-                    if (index.isUnique)
-                        indexType += "UNIQUE ";
-                    if (index.isSpatial)
-                        indexType += "SPATIAL ";
-                    if (index.isFulltext)
-                        indexType += "FULLTEXT ";
-                    upQueries.push(`ALTER TABLE ${this.escapeTableName(table)} DROP INDEX \`${index.name}\`, ADD ${indexType}INDEX \`${newIndexName}\` (${columnNames})`);
-                    downQueries.push(`ALTER TABLE ${this.escapeTableName(table)} DROP INDEX \`${newIndexName}\`, ADD ${indexType}INDEX \`${index.name}\` (${columnNames})`);
-
-                    // replace constraint name
-                    index.name = newIndexName;
-                });
-
-                // rename foreign key constraints
-                clonedTable.findColumnForeignKeys(oldColumn).forEach(foreignKey => {
-                    // build new constraint name
-                    foreignKey.columnNames.splice(foreignKey.columnNames.indexOf(oldColumn.name), 1);
-                    foreignKey.columnNames.push(newColumn.name);
-                    const columnNames = foreignKey.columnNames.map(column => `\`${column}\``).join(", ");
-                    const referencedColumnNames = foreignKey.referencedColumnNames.map(column => `\`${column}\``).join(",");
-                    const newForeignKeyName = this.connection.namingStrategy.foreignKeyName(clonedTable, foreignKey.columnNames);
-
-                    // build queries
-                    let up = `ALTER TABLE ${this.escapeTableName(table)} DROP FOREIGN KEY \`${foreignKey.name}\`, ADD CONSTRAINT \`${newForeignKeyName}\` FOREIGN KEY (${columnNames}) ` +
-                        `REFERENCES ${this.escapeTableName(foreignKey.referencedTableName)}(${referencedColumnNames})`;
-                    if (foreignKey.onDelete)
-                        up += ` ON DELETE ${foreignKey.onDelete}`;
-                    if (foreignKey.onUpdate)
-                        up += ` ON UPDATE ${foreignKey.onUpdate}`;
-
-                    let down = `ALTER TABLE ${this.escapeTableName(table)} DROP FOREIGN KEY \`${newForeignKeyName}\`, ADD CONSTRAINT \`${foreignKey.name}\` FOREIGN KEY (${columnNames}) ` +
-                        `REFERENCES ${this.escapeTableName(foreignKey.referencedTableName)}(${referencedColumnNames})`;
-                    if (foreignKey.onDelete)
-                        down += ` ON DELETE ${foreignKey.onDelete}`;
-                    if (foreignKey.onUpdate)
-                        down += ` ON UPDATE ${foreignKey.onUpdate}`;
-
-                    upQueries.push(up);
-                    downQueries.push(down);
-
-                    // replace constraint name
-                    foreignKey.name = newForeignKeyName;
-                });
-
-                // rename old column in the Table object
-                const oldTableColumn = clonedTable.columns.find(column => column.name === oldColumn.name);
-                clonedTable.columns[clonedTable.columns.indexOf(oldTableColumn!)].name = newColumn.name;
-                oldColumn.name = newColumn.name;
-            }
-
-            if (this.isColumnChanged(oldColumn, newColumn, true)) {
-                upQueries.push(`ALTER TABLE ${this.escapeTableName(table)} CHANGE \`${oldColumn.name}\` ${this.buildCreateColumnSql(newColumn, true)}`);
-                downQueries.push(`ALTER TABLE ${this.escapeTableName(table)} CHANGE \`${newColumn.name}\` ${this.buildCreateColumnSql(oldColumn, true)}`);
-            }
-
-            if (newColumn.isPrimary !== oldColumn.isPrimary) {
-                // if table have generated column, we must drop AUTO_INCREMENT before changing primary constraints.
-                const generatedColumn = clonedTable.columns.find(column => column.isGenerated && column.generationStrategy === "increment");
-                if (generatedColumn) {
-                    const nonGeneratedColumn = generatedColumn.clone();
-                    nonGeneratedColumn.isGenerated = false;
-                    nonGeneratedColumn.generationStrategy = undefined;
-
-                    upQueries.push(`ALTER TABLE ${this.escapeTableName(table)} CHANGE \`${generatedColumn.name}\` ${this.buildCreateColumnSql(nonGeneratedColumn, true)}`);
-                    downQueries.push(`ALTER TABLE ${this.escapeTableName(table)} CHANGE \`${nonGeneratedColumn.name}\` ${this.buildCreateColumnSql(generatedColumn, true)}`);
-                }
-
-                const primaryColumns = clonedTable.primaryColumns;
-
-                // if primary column state changed, we must always drop existed constraint.
-                if (primaryColumns.length > 0) {
-                    const columnNames = primaryColumns.map(column => `\`${column.name}\``).join(", ");
-                    upQueries.push(`ALTER TABLE ${this.escapeTableName(table)} DROP PRIMARY KEY`);
-                    downQueries.push(`ALTER TABLE ${this.escapeTableName(table)} ADD PRIMARY KEY (${columnNames})`);
-                }
-
-                if (newColumn.isPrimary === true) {
-                    primaryColumns.push(newColumn);
-                    // update column in table
-                    const column = clonedTable.columns.find(column => column.name === newColumn.name);
-                    column!.isPrimary = true;
-                    const columnNames = primaryColumns.map(column => `\`${column.name}\``).join(", ");
-                    upQueries.push(`ALTER TABLE ${this.escapeTableName(table)} ADD PRIMARY KEY (${columnNames})`);
-                    downQueries.push(`ALTER TABLE ${this.escapeTableName(table)} DROP PRIMARY KEY`);
-
-                } else {
-                    const primaryColumn = primaryColumns.find(c => c.name === newColumn.name);
-                    primaryColumns.splice(primaryColumns.indexOf(primaryColumn!), 1);
-                    // update column in table
-                    const column = clonedTable.columns.find(column => column.name === newColumn.name);
-                    column!.isPrimary = false;
-
-                    // if we have another primary keys, we must recreate constraint.
-                    if (primaryColumns.length > 0) {
-                        const columnNames = primaryColumns.map(column => `\`${column.name}\``).join(", ");
-                        upQueries.push(`ALTER TABLE ${this.escapeTableName(table)} ADD PRIMARY KEY (${columnNames})`);
-                        downQueries.push(`ALTER TABLE ${this.escapeTableName(table)} DROP PRIMARY KEY`);
-                    }
-                }
-
-                // if we have generated column, and we dropped AUTO_INCREMENT property before, we must bring it back
-                if (generatedColumn) {
-                    const nonGeneratedColumn = generatedColumn.clone();
-                    nonGeneratedColumn.isGenerated = false;
-                    nonGeneratedColumn.generationStrategy = undefined;
-
-                    upQueries.push(`ALTER TABLE ${this.escapeTableName(table)} CHANGE \`${nonGeneratedColumn.name}\` ${this.buildCreateColumnSql(generatedColumn, true)}`);
-                    downQueries.push(`ALTER TABLE ${this.escapeTableName(table)} CHANGE \`${generatedColumn.name}\` ${this.buildCreateColumnSql(nonGeneratedColumn, true)}`);
-                }
-            }
-
-            if (newColumn.isUnique !== oldColumn.isUnique) {
-                if (newColumn.isUnique === true) {
-                    const uniqueIndex = new TableIndex({
-                        name: this.connection.namingStrategy.indexName(table.name, [newColumn.name]),
-                        columnNames: [newColumn.name],
-                        isUnique: true
-                    });
-                    clonedTable.indices.push(uniqueIndex);
-                    clonedTable.uniques.push(new TableUnique({
-                        name: uniqueIndex.name,
-                        columnNames: uniqueIndex.columnNames
-                    }));
-                    upQueries.push(`ALTER TABLE ${this.escapeTableName(table)} ADD UNIQUE INDEX \`${uniqueIndex.name}\` (\`${newColumn.name}\`)`);
-                    downQueries.push(`ALTER TABLE ${this.escapeTableName(table)} DROP INDEX \`${uniqueIndex.name}\``);
-
-                } else {
-                    const uniqueIndex = clonedTable.indices.find(index => {
-                        return index.columnNames.length === 1 && index.isUnique === true && !!index.columnNames.find(columnName => columnName === newColumn.name);
-                    });
-                    clonedTable.indices.splice(clonedTable.indices.indexOf(uniqueIndex!), 1);
-
-                    const tableUnique = clonedTable.uniques.find(unique => unique.name === uniqueIndex!.name);
-                    clonedTable.uniques.splice(clonedTable.uniques.indexOf(tableUnique!), 1);
-
-                    upQueries.push(`ALTER TABLE ${this.escapeTableName(table)} DROP INDEX \`${uniqueIndex!.name}\``);
-                    downQueries.push(`ALTER TABLE ${this.escapeTableName(table)} ADD UNIQUE INDEX \`${uniqueIndex!.name}\` (\`${newColumn.name}\`)`);
-                }
-            }
-        } */
-
-        // await this.executeQueries(upQueries, downQueries);
-        // this.replaceCachedTable(table, clonedTable);
     }
 
     /**
@@ -955,44 +736,6 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         // drop primary key constraint
         if (column.isPrimary) {
             throw new Error(`NYI: spanner: dropColumn column.isPrimary`);
-            /*
-            // if table have generated column, we must drop AUTO_INCREMENT before changing primary constraints.
-            const generatedColumn = clonedTable.columns.find(column => column.isGenerated && column.generationStrategy === "increment");
-            if (generatedColumn) {
-                const nonGeneratedColumn = generatedColumn.clone();
-                nonGeneratedColumn.isGenerated = false;
-                nonGeneratedColumn.generationStrategy = undefined;
-
-                upQueries.push(`ALTER TABLE ${this.escapeTableName(table)} CHANGE \`${generatedColumn.name}\` ${this.buildCreateColumnSql(nonGeneratedColumn, true)}`);
-                downQueries.push(`ALTER TABLE ${this.escapeTableName(table)} CHANGE \`${nonGeneratedColumn.name}\` ${this.buildCreateColumnSql(generatedColumn, true)}`);
-            }
-
-            // dropping primary key constraint
-            const columnNames = clonedTable.primaryColumns.map(primaryColumn => `\`${primaryColumn.name}\``).join(", ");
-            upQueries.push(`ALTER TABLE ${this.escapeTableName(clonedTable)} DROP PRIMARY KEY`);
-            downQueries.push(`ALTER TABLE ${this.escapeTableName(clonedTable)} ADD PRIMARY KEY (${columnNames})`);
-
-            // update column in table
-            const tableColumn = clonedTable.findColumnByName(column.name);
-            tableColumn!.isPrimary = false;
-
-            // if primary key have multiple columns, we must recreate it without dropped column
-            if (clonedTable.primaryColumns.length > 0) {
-                const columnNames = clonedTable.primaryColumns.map(primaryColumn => `\`${primaryColumn.name}\``).join(", ");
-                upQueries.push(`ALTER TABLE ${this.escapeTableName(clonedTable)} ADD PRIMARY KEY (${columnNames})`);
-                downQueries.push(`ALTER TABLE ${this.escapeTableName(clonedTable)} DROP PRIMARY KEY`);
-            }
-
-            // if we have generated column, and we dropped AUTO_INCREMENT property before, and this column is not current dropping column, we must bring it back
-            if (generatedColumn && generatedColumn.name !== column.name) {
-                const nonGeneratedColumn = generatedColumn.clone();
-                nonGeneratedColumn.isGenerated = false;
-                nonGeneratedColumn.generationStrategy = undefined;
-
-                upQueries.push(`ALTER TABLE ${this.escapeTableName(table)} CHANGE \`${nonGeneratedColumn.name}\` ${this.buildCreateColumnSql(generatedColumn, true)}`);
-                downQueries.push(`ALTER TABLE ${this.escapeTableName(table)} CHANGE \`${generatedColumn.name}\` ${this.buildCreateColumnSql(nonGeneratedColumn, true)}`);
-            }
-            */
         }
 
         // drop column index
@@ -1019,7 +762,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         }
 
         upQueries.push(`ALTER TABLE ${this.escapeTableName(table)} DROP COLUMN \`${column.name}\``);
-        downQueries.push(`ALTER TABLE ${this.escapeTableName(table)} ADD ${this.buildCreateColumnSql(column, true)}`);
+        downQueries.push(`ALTER TABLE ${this.escapeTableName(table)} ADD ${this.buildCreateColumnSql(column, { skipPrimary: true })}`);
 
         await this.executeQueries(upQueries, downQueries);
 
@@ -1061,60 +804,6 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      */
     async updatePrimaryKeys(tableOrName: Table|string, columns: TableColumn[]): Promise<void> {
         throw new Error(`NYI: spanner: updatePrimaryKeys`);
-        /*
-        const table = tableOrName instanceof Table ? tableOrName : await this.getCachedTable(tableOrName);
-        const clonedTable = table.clone();
-        const columnNames = columns.map(column => column.name);
-        const upQueries: string[] = [];
-        const downQueries: string[] = [];
-
-        // if table have generated column, we must drop AUTO_INCREMENT before changing primary constraints.
-        const generatedColumn = clonedTable.columns.find(column => column.isGenerated && column.generationStrategy === "increment");
-        if (generatedColumn) {
-            const nonGeneratedColumn = generatedColumn.clone();
-            nonGeneratedColumn.isGenerated = false;
-            nonGeneratedColumn.generationStrategy = undefined;
-
-            upQueries.push(`ALTER TABLE ${this.escapeTableName(table)} CHANGE \`${generatedColumn.name}\` ${this.buildCreateColumnSql(nonGeneratedColumn, true)}`);
-            downQueries.push(`ALTER TABLE ${this.escapeTableName(table)} CHANGE \`${nonGeneratedColumn.name}\` ${this.buildCreateColumnSql(generatedColumn, true)}`);
-        }
-
-        // if table already have primary columns, we must drop them.
-        const primaryColumns = clonedTable.primaryColumns;
-        if (primaryColumns.length > 0) {
-            const columnNames = primaryColumns.map(column => `\`${column.name}\``).join(", ");
-            upQueries.push(`ALTER TABLE ${this.escapeTableName(table)} DROP PRIMARY KEY`);
-            downQueries.push(`ALTER TABLE ${this.escapeTableName(table)} ADD PRIMARY KEY (${columnNames})`);
-        }
-
-        // update columns in table.
-        clonedTable.columns
-            .filter(column => columnNames.indexOf(column.name) !== -1)
-            .forEach(column => column.isPrimary = true);
-
-        const columnNamesString = columnNames.map(columnName => `\`${columnName}\``).join(", ");
-        upQueries.push(`ALTER TABLE ${this.escapeTableName(table)} ADD PRIMARY KEY (${columnNamesString})`);
-        downQueries.push(`ALTER TABLE ${this.escapeTableName(table)} DROP PRIMARY KEY`);
-
-        // if we already have generated column or column is changed to generated, and we dropped AUTO_INCREMENT property before, we must bring it back
-        const newOrExistGeneratedColumn = generatedColumn ? generatedColumn : columns.find(column => column.isGenerated && column.generationStrategy === "increment");
-        if (newOrExistGeneratedColumn) {
-            const nonGeneratedColumn = newOrExistGeneratedColumn.clone();
-            nonGeneratedColumn.isGenerated = false;
-            nonGeneratedColumn.generationStrategy = undefined;
-
-            upQueries.push(`ALTER TABLE ${this.escapeTableName(table)} CHANGE \`${nonGeneratedColumn.name}\` ${this.buildCreateColumnSql(newOrExistGeneratedColumn, true)}`);
-            downQueries.push(`ALTER TABLE ${this.escapeTableName(table)} CHANGE \`${newOrExistGeneratedColumn.name}\` ${this.buildCreateColumnSql(nonGeneratedColumn, true)}`);
-
-            // if column changed to generated, we must update it in table
-            const changedGeneratedColumn = clonedTable.columns.find(column => column.name === newOrExistGeneratedColumn.name);
-            changedGeneratedColumn!.isGenerated = true;
-            changedGeneratedColumn!.generationStrategy = "increment";
-        }
-
-        await this.executeQueries(upQueries, downQueries);
-        this.replaceCachedTable(table, clonedTable);
-        */
     }
 
     /**
@@ -1488,7 +1177,6 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
             }
             // if column is no more exists in new entity metadata, remove all extend schema for such columns
             if (oldColumns.length > 0) {
-                console.log('oldColumns', oldColumns);
                 promises.push(Promise.all(oldColumns.map(async c => {
                     await this.deleteExtendSchema(t.name, c);
                 })));
@@ -1576,8 +1264,10 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
 
     protected verifyAndFillAutoGeneratedValues(
         table: Table,
-        valuesSet?: ObjectLiteral|ObjectLiteral[]
+        qem: QueryExpressionMap,
+        insert: boolean
     ): undefined|ObjectLiteral|ObjectLiteral[] {
+        let valuesSet = qem.valuesSet;
         if (!valuesSet) {
             return valuesSet;
         }
@@ -1602,20 +1292,29 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
 
     protected verifyValues(
         table: Table,
-        valuesSet?: ObjectLiteral|ObjectLiteral[]
+        qem: QueryExpressionMap
     ): undefined|ObjectLiteral|ObjectLiteral[] {
+        let valuesSet = qem.valuesSet;
         if (!valuesSet) {
             return valuesSet;
         }
         if (!(valuesSet instanceof Array)) {
             valuesSet = [valuesSet];
         }
+        const metadata = qem.mainAlias!.hasMetadata ? qem.mainAlias!.metadata : undefined;
         for (const values of valuesSet) {
             for (const column of table.columns) {
                 if (values[column.name] !== undefined) {
                     values[column.name] = this.driver.normalizeValue(
                         values[column.name], column.type);
                 }
+            }
+            if (metadata) {
+                if (metadata.versionColumn && !values[metadata.versionColumn.databaseName])
+                    values[metadata.versionColumn.databaseName] = `${metadata.versionColumn.databaseName} + 1`;
+                if (metadata.updateDateColumn && !values[metadata.updateDateColumn.databaseName])
+                    values[metadata.updateDateColumn.databaseName] =
+                        this.driver.autoGenerateValue(table.name, metadata.updateDateColumn.databaseName);
             }
         }
         return valuesSet;
@@ -1769,7 +1468,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
                     return;
                 }
                 const vss = this.verifyAndFillAutoGeneratedValues(
-                    table, qb.expressionMap.valuesSet);
+                    table, qb.expressionMap, true);
                 // NOTE: when transaction mode, callback (next args of vss) never called.
                 // at transaction mode, this call just change queuedMutations_ property of this.tx,
                 // and callback ignored.
@@ -1793,7 +1492,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
                     fail(new Error(`update: fatal: no such table ${qb.mainTableName}`));
                     return;
                 }
-                const vss = this.verifyValues(table, qb.expressionMap.valuesSet);
+                const vss = this.verifyValues(table, qb.expressionMap);
                 if (!vss || !(vss instanceof Array)) {
                     fail(new Error('only single value set can be used spanner update'));
                     return;
@@ -1829,7 +1528,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
                 }
                 // for upsert, we assume all primary keys are provided, like insert.
                 const vss = this.verifyAndFillAutoGeneratedValues(
-                    table, qb.expressionMap.valuesSet);
+                    table, qb.expressionMap, false);
                 // callback not provided see comment of insert
                 await this.request(table, 'upsert', vss);
                 ok(vss);
@@ -1963,7 +1662,7 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
      * Builds create table sql
      */
     protected createTableSql(table: Table): string {
-        const columnDefinitions = table.columns.map(column => this.buildCreateColumnSql(column, true)).join(", ");
+        const columnDefinitions = table.columns.map(column => this.buildCreateColumnSql(column, { skipPrimary: true })).join(", ");
         let sql = `CREATE TABLE ${this.escapeTableName(table)} (${columnDefinitions}`;
 
         // we create unique indexes instead of unique constraints, because MySql does not have unique constraints.
@@ -2122,12 +1821,43 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
         return splits.map(i => disableEscape ? i : `\`${i}\``).join(".");
     }
 
+    protected static needColumnOptions(column: TableColumn) {
+        return column.default === SpannerColumnUpdateWithCommitTimestamp;
+    }
+
+    protected static isColumnOptionsChanged(oldColumn: TableColumn, newColumn: TableColumn): boolean {
+        return (
+            SpannerQueryRunner.needColumnOptions(oldColumn) !==
+            SpannerQueryRunner.needColumnOptions(newColumn)
+        );
+    }
+
     /**
+     * Builds a part of query to set options to a column.
+     * because spanner ddl does not allow options to set with usual column alternation.
+     * `reverse = true` is used to generate down migration SQL
+     */
+    protected buildSetColumnOptionsSql(column: TableColumn, reverse?: boolean): string {
+        const options = [];
+        // spanner ddl does not support any default value except createDate/updateDate related
+        // other default value is supported by extend schema table
+        if (column.default !== undefined && column.default === SpannerColumnUpdateWithCommitTimestamp) {
+            options.push(`allow_commit_timestamp=${reverse ? "null" : "true"}`);
+        } else {
+            options.push(`allow_commit_timestamp=${reverse ? "true" : "null"}`);
+        }
+        return options.length > 0 ? options.join(',') : "";
+    }
+        /**
      * Builds a part of query to create/change a column.
      */
-    protected buildCreateColumnSql(column: TableColumn, skipPrimary: boolean, skipName: boolean = false) {
+    protected buildCreateColumnSql(column: TableColumn, skips: {
+        skipPrimary?: boolean;
+        skipName?: boolean;
+        skipOptions?: boolean;
+    }) {
         let c = "";
-        if (skipName) {
+        if (skips.skipName) {
             c = this.connection.driver.createFullType(column);
         } else {
             c = `\`${column.name}\` ${this.connection.driver.createFullType(column)}`;
@@ -2173,21 +1903,19 @@ export class SpannerQueryRunner extends BaseQueryRunner implements QueryRunner {
 
         // spanner ddl does not support any default value except SpannerColumnUpdateWithCommitTimestamp
         // other default value is supported by extend schema table
-        if (column.default !== undefined && column.default !== null) {
-            if (column.default === SpannerColumnUpdateWithCommitTimestamp) {
-                c += `OPTIONS (allow_commit_timestamp=true)`
+        if (!skips.skipOptions) {
+            const optionsString = this.buildSetColumnOptionsSql(column);
+            if (optionsString.length > 0) {
+                c += `OPTIONS (${optionsString})`
             }
         }
 
         // does not support on update
-        if (column.onUpdate)
+        if (column.onUpdate) {
             throw new Error(`NYI: spanner: column.onUpdate`); //c += ` ON UPDATE ${column.onUpdate}`;
+        }
 
         return c;
-    }
-
-    protected buildCreateColumnOptionsSql(column: TableColumn): string {
-        return "";
     }
 
     protected replaceCachedTable(table: Table, changedTable: Table|null): void {

@@ -31,7 +31,8 @@ if (process.env.PRELOAD_SPANNER_DEPENDENCY) {
 //import { filter } from "minimatch";
 
 
-export const SpannerColumnUpdateWithCommitTimestamp = "commit_timestamp";
+export const SpannerColumnUpdateWithCurrentTimestamp = "CURRENT_TIMESTAMP(6)";
+export const SpannerColumnUpdateWithCommitTimestamp = "spanner.commit_timestamp()";
 
 /**
  * Organizes communication with MySQL DBMS.
@@ -159,10 +160,10 @@ export class SpannerDriver implements Driver {
     mappedDataTypes: MappedColumnTypes = {
         createDate: "timestamp",
         createDatePrecision: 20,
-        createDateDefault: "CURRENT_TIMESTAMP(6)",
+        createDateDefault: SpannerColumnUpdateWithCurrentTimestamp,
         updateDate: "timestamp",
         updateDatePrecision: 20,
-        updateDateDefault: "CURRENT_TIMESTAMP(6)",
+        updateDateDefault: SpannerColumnUpdateWithCurrentTimestamp,
         version: "int64",
         treeLevel: "int64",
         migrationId: "string",
@@ -217,7 +218,9 @@ export class SpannerDriver implements Driver {
                     const column = table.findColumnByName(columnName);
                     if (column) {
                         column.isGenerated = !!columnSchema.generator;
-                        column.default = columnSchema.default;
+                        if (!SpannerDriver.needToChangeByNormalSchema(columnSchema.default, column.default)) {
+                            column.default = columnSchema.default;
+                        }
                         column.generationStrategy = columnSchema.generatorStorategy;
                     } else if (!ignoreColumnNotFound) {
                         throw new Error(`extendSchema for column ${columnName} exists but table does not have it`);
@@ -237,6 +240,13 @@ export class SpannerDriver implements Driver {
             as_numbers.push(b);
         }
         return Long.fromBytes(as_numbers, true).toString();
+    }
+
+    static needToChangeByNormalSchema(from: any, to: any) {
+        //if change to SpannerColumnUpdateWithCommitTimestamp or from SpannerColumnUpdateWithCommitTimestamp,
+        //need schema change
+        return (from !== to) &&
+            (from === SpannerColumnUpdateWithCommitTimestamp || to === SpannerColumnUpdateWithCommitTimestamp);
     }
 
     // -------------------------------------------------------------------------
@@ -411,14 +421,17 @@ export class SpannerDriver implements Driver {
     }
     encodeDefaultValueGenerator(value: any): string {
         const defaultValue = typeof(value) === 'function' ? value() : value;
-        if (defaultValue === this.mappedDataTypes.createDateDefault) {
+        if (defaultValue === SpannerColumnUpdateWithCommitTimestamp ||
+            defaultValue === SpannerColumnUpdateWithCurrentTimestamp) {
             return defaultValue;
         } else {
             return JSON.stringify(defaultValue);
         }
     }
     decodeDefaultValueGenerator(value: string): () => any {
-        if (value === this.mappedDataTypes.createDateDefault) {
+        if (value === SpannerColumnUpdateWithCommitTimestamp) {
+            return () => SpannerColumnUpdateWithCommitTimestamp;
+        } else if (value === SpannerColumnUpdateWithCurrentTimestamp) {
             return () => new Date();
         } else {
             const parsedDefault = JSON.parse(value);
@@ -683,8 +696,8 @@ export class SpannerDriver implements Driver {
     normalizeDefault(columnMetadata: ColumnMetadata): string {
         const defaultValue = columnMetadata.default;
 
-        if (columnMetadata.isUpdateDate) {
-            return SpannerColumnUpdateWithCommitTimestamp;
+        if (columnMetadata.isUpdateDate || columnMetadata.isCreateDate) {
+            return typeof defaultValue === "function" ? defaultValue() : defaultValue;
 
         } else if (typeof defaultValue === "number") {
             return "" + defaultValue;
@@ -822,10 +835,10 @@ export class SpannerDriver implements Driver {
                // console.log("comment:", tableColumn.comment, columnMetadata.comment);
             // if (tableColumn.default !== columnMetadata.default)
                // console.log("default:", tableColumn.default, columnMetadata.default);
-            // if (!this.compareDefaultValues(this.normalizeDefault(columnMetadata), tableColumn.default))
-               // console.log("default changed:", !this.compareDefaultValues(this.normalizeDefault(columnMetadata), tableColumn.default));
-            if (tableColumn.onUpdate !== columnMetadata.onUpdate)
-               console.log("onUpdate:", tableColumn.onUpdate, columnMetadata.onUpdate);
+            // if (!this.compareDefaultValues(columnMetadata, this.normalizeDefault(columnMetadata), tableColumn.default))
+               // console.log("default changed:", !this.compareDefaultValues(columnMetadata, this.normalizeDefault(columnMetadata), tableColumn.default));
+            if (tableColumn.onUpdate !== columnMetadata.onUpdate
+               console.log("onUpdate:", tableColumn.onUpdate, columnMetadata.onUpdate, columnMetadata.isUpdateDate);
             if (tableColumn.isPrimary !== columnMetadata.isPrimary)
                console.log("isPrimary:", tableColumn.isPrimary, columnMetadata.isPrimary);
             if (tableColumn.isNullable !== columnMetadata.isNullable)
@@ -847,8 +860,7 @@ export class SpannerDriver implements Driver {
                 || tableColumn.asExpression !== columnMetadata.asExpression
                 || tableColumn.generatedType !== columnMetadata.generatedType
                 // || tableColumn.comment !== columnMetadata.comment // todo
-                // default value is alway sync'ed to latest definition, via extendSchema repository
-                // || !this.compareDefaultValues(this.normalizeDefault(columnMetadata), tableColumn.default)
+                || !this.compareDefaultValues(columnMetadata, this.normalizeDefault(columnMetadata), tableColumn.default)
                 || tableColumn.onUpdate !== columnMetadata.onUpdate
                 || tableColumn.isPrimary !== columnMetadata.isPrimary
                 || tableColumn.isNullable !== columnMetadata.isNullable
@@ -922,14 +934,14 @@ export class SpannerDriver implements Driver {
     /**
      * Checks if "DEFAULT" values in the column metadata and in the database are equal.
      */
-    protected compareDefaultValues(columnMetadataValue: string, databaseValue: string): boolean {
-        if (typeof columnMetadataValue === "string" && typeof databaseValue === "string") {
-            // we need to cut out "'" because in mysql we can understand returned value is a string or a function
-            // as result compare cannot understand if default is really changed or not
-            columnMetadataValue = columnMetadataValue.replace(/^'+|'+$/g, "");
-            databaseValue = databaseValue.replace(/^'+|'+$/g, "");
+    protected compareDefaultValues(columnMetadata: ColumnMetadata, columnMetadataValue?: string, databaseValue?: string): boolean {
+        // console.log('compareDefaultValues', columnMetadata.databaseName, columnMetadataValue, databaseValue)
+        if (!columnMetadata.isUpdateDate && !columnMetadata.isCreateDate) {
+            // basically, default value is alway sync'ed to latest definition, via extendSchema repository
+            // so do not change database schema by any default value change,
+            // except for createDate/updateDate related dafault value, which is set at ColumnMetadata.ts 387-402
+            return true;
         }
-
         return columnMetadataValue === databaseValue;
     }
 
@@ -1047,14 +1059,13 @@ export class SpannerDriver implements Driver {
             const indexStmts: string = m[3];
             // parse columns
             for (const columnStmt of columnStmts.split(',')) {
-                // console.log('columnStmt', `[${columnStmt}]`);
-                const cm = columnStmt.match(/(\w+)\s+([\w\(\)]+)\s*([^\n]*)/);
+                // console.log('--- columnStmt', `[${columnStmt}]`);
+                const cm = columnStmt.match(/(\w+)\s+([\w\(\)]+)\s*((.|[\r\n])*)/);
                 if (!cm) {
                     throw new Error("invalid ddl column format:" + columnStmt);
                 }
                 const type = this.parseTypeName(cm[2]);
-                // check and store constraint with m[3]
-                columns.push({
+                const columnOptions: TableColumnOptions = {
                     name: cm[1],
                     type: type.typeName,
                     isNullable: cm[3].indexOf("NOT NULL") < 0,
@@ -1065,7 +1076,25 @@ export class SpannerDriver implements Driver {
                     length: type.length ? type.length : undefined,
                     default: undefined, // set in updateTableWithExtendSchema
                     generationStrategy: undefined, // set in updateTableWithExtendSchema
-                });
+                };
+                // check and store options with cm[3]
+                const osm = cm[3].match(/OPTIONS\s*\(((.|[\r\n])*)\)/);
+                if (osm) {
+                    const options = osm[1].split(',').map((t) => t.trim());
+                    for (const option of options) {
+                        for(const regex of [/^(allow_commit_timestamp)\s*=\s*(\w+)/]) {
+                            const om = option.match(regex);
+                            if (om) {
+                                if (om[1] === "allow_commit_timestamp") {
+                                    columnOptions.default = Boolean(om[2]) ? SpannerColumnUpdateWithCommitTimestamp : undefined;
+                                } else {
+                                    throw new Error(`unsupported spanner column options: ${osm[0]}`)
+                                }
+                            }
+                        }
+                    }
+                }
+                columns.push(columnOptions);
             }
             // parse primary and interleave statements
             // probably tweak required (need to see actual index/interleave statements format)
@@ -1115,8 +1144,8 @@ export class SpannerDriver implements Driver {
         }
         const result: { [tableName:string]: Table } = {};
         for (const tableName in tableOptionsMap) {
-            // console.log('tableOptions', tableName, tableOptionsMap[tableName]);
             result[tableName] = new Table(tableOptionsMap[tableName]);
+            // console.log('tableOptions', tableName, tableOptionsMap[tableName], result[tableName]);
         }
         return result;
     }
