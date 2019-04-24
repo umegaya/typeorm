@@ -152,7 +152,10 @@ export class SpannerDDLTransformer {
         return `ALTER TABLE ${this.scopedTable} DROP COLUMN ${ast.column}`;
     }
     protected O_ALTER_TABLE_SPEC_changeColumn(ast: any, extendSchemas: SpannerExtendSchemaSources): string {
-        return `ALTER TABLE ${this.scopedTable} ALTER COLUMN ${[ast.column, ast.newName].filter((e: string) => !!e).join(' ')} ` +
+        if (ast.newName && ast.column !== ast.newName) {
+            throw new Error(`changing column name ${ast.column} => ${ast.newName} is not supported `);
+        }
+        return `ALTER TABLE ${this.scopedTable} ALTER COLUMN ${ast.column} ` +
             this.alterColumnDefinitionHelper(ast, extendSchemas);
     }
     protected O_ALTER_TABLE_SPEC_addIndex(ast: any, extendSchemas: SpannerExtendSchemaSources): string {
