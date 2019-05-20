@@ -531,7 +531,7 @@ export class SubjectExecutor {
                     return;
 
                 // update nullable columns
-                if (column.isNullable) {
+                if (column.isNullable && (!this.options || !this.options.skip_set_null_for_undefined_nullable_column)) {
                     const columnValue = column.getEntityValue(subject.entity!);
                     if (columnValue === undefined)
                         column.setEntityValue(subject.entity!, null);

@@ -38,4 +38,9 @@ export interface SaveOptions {
      */
     reload?: boolean;
 
+    /**
+     * if provided entity does not set value for nullable column,
+     * ignore set null for the value of column. disabled by default.
+     */
+    skip_set_null_for_undefined_nullable_column?: boolean;
 }
