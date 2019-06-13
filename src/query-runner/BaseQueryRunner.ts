@@ -354,18 +354,18 @@ export abstract class BaseQueryRunner {
     }
 
     async runInTransaction<T>(
-        runInTransaction: (tx: EntityManager) => Promise<T>, 
+        runInTransaction: (tx: EntityManager) => Promise<T>,
         isolationLevel?: IsolationLevel
     ): Promise<T> {
         // do this hack or duplicated runInTransaction code in XXXQueryRunner
-        // assume that extends BaseQueryRunner always comes with implements QueryRunner. 
+        // assume that extends BaseQueryRunner always comes with implements QueryRunner.
         const queryRunner = <QueryRunner><any>this;
         if (isolationLevel) {
             await queryRunner.startTransaction(isolationLevel);
         } else {
             await queryRunner.startTransaction();
         }
-        const ret = runInTransaction(queryRunner.manager);
+        const ret = await runInTransaction(queryRunner.manager);
         await queryRunner.commitTransaction();
         return ret;
     }
