@@ -82,7 +82,7 @@ export class SpannerDDLTransformer {
         if (ast.column) {
             this.setScopedColumn(ast.column.name);
             return `${ast.column.name} ${this.O_DATATYPE(ast.column.def.datatype, extendSchemas)} ` +
-                `${ast.column.def.columnDefinition.map((cd: any) => this.O_COLUMN_DEFINITION(cd.def, extendSchemas)).join(' ')}`;
+                `${this.O_COLUMN_DEFINITION(ast.column.def.columnDefinition, extendSchemas)}`;
         } else if (ast.primaryKey) {
             this.primaryKeyColumns = this.primaryKeyColumns
             .concat(ast.primaryKey.columns.map((c: any) => {
@@ -212,22 +212,28 @@ export class SpannerDDLTransformer {
         return this.scopedColumnType;
     }
     // O_XXXXX_DATATYPE: default (ignored)
-    protected O_COLUMN_DEFINITION(ast: any, extendSchemas: SpannerExtendSchemaSources): string {
-        if (ast.nullable === true) {
-            return ""; //spanner does not allow `NULL` to express nullable column. all column nullable by default.
-        } else if (ast.nullable === false) {
-            return "NOT NULL";
-        } else if (ast.autoincrement) {
-            this.addExtendSchema(extendSchemas, "generator", "increment");
-        } else if (ast.default !== undefined) {
-            this.addExtendSchema(extendSchemas, "default", this.defaultValueEncoder(ast.default));
+    protected O_COLUMN_DEFINITION(asts: any, extendSchemas: SpannerExtendSchemaSources): string {
+        if (!Array.isArray(asts)) {
+            asts = [asts];
         }
-        return "";
+        return asts.map((ast: any) => {
+            const a = ast.def;
+            if (a.nullable === true) {
+                return ""; //spanner does not allow `NULL` to express nullable column. all column nullable by default.
+            } else if (a.nullable === false) {
+                return "NOT NULL";
+            } else if (a.autoincrement) {
+                this.addExtendSchema(extendSchemas, "generator", "increment");
+            } else if (a.default !== undefined) {
+                this.addExtendSchema(extendSchemas, "default", this.defaultValueEncoder(a.default));
+            }
+            return "";
+        }).join(' ');
     }
 
     // helpers
     protected alterColumnDefinitionHelper(ast: any, extendSchemas: SpannerExtendSchemaSources): string {
-        this.setScopedColumn(ast.name);
+        this.setScopedColumn(ast.column);
         return `${this.O_DATATYPE(ast.datatype, extendSchemas)} ` +
         `${this.O_COLUMN_DEFINITION(ast.columnDefinition, extendSchemas)}` +
         (ast.position ? (ast.position.after ? `AFTER ${ast.position.after}` : "FIRST") : "");
