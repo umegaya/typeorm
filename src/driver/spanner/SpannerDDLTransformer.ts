@@ -56,10 +56,16 @@ export class SpannerDDLTransformer {
         };
     }
     protected setScopedColumn(column: string) {
+        if (!column) {
+            throw new Error(`setScopedColumn: column should not be empty ${column}`);
+        }
         this.scopedIndex = undefined;
         this.scopedColumn = column;
     }
     protected setScopedIndex(index: string) {
+        if (!index) {
+            throw new Error(`setScopedIndex: index should not be empty ${index}`);
+        }
         this.scopedIndex = `idx@${index}`;
         this.scopedColumn = undefined;
     }
@@ -145,7 +151,7 @@ export class SpannerDDLTransformer {
     }
     protected O_ALTER_TABLE_SPEC_addColumn(ast: any, extendSchemas: SpannerExtendSchemaSources): string {
         return `ALTER TABLE ${this.scopedTable} ADD COLUMN ${ast.name} ` +
-            this.alterColumnDefinitionHelper(ast, extendSchemas);
+            this.alterColumnDefinitionHelper(ast, ast.name, extendSchemas);
     }
     protected O_ALTER_TABLE_SPEC_dropColumn(ast: any, extendSchemas: SpannerExtendSchemaSources): string {
         this.setScopedColumn(ast.column);
@@ -156,7 +162,7 @@ export class SpannerDDLTransformer {
             throw new Error(`changing column name ${ast.column} => ${ast.newName} is not supported `);
         }
         return `ALTER TABLE ${this.scopedTable} ALTER COLUMN ${ast.column} ` +
-            this.alterColumnDefinitionHelper(ast, extendSchemas);
+            this.alterColumnDefinitionHelper(ast, ast.column, extendSchemas);
     }
     protected O_ALTER_TABLE_SPEC_addIndex(ast: any, extendSchemas: SpannerExtendSchemaSources): string {
         return this.indexDefinitionHelper(this.indexHelper(ast, {unique:false, sparse:false}));
@@ -232,8 +238,8 @@ export class SpannerDDLTransformer {
     }
 
     // helpers
-    protected alterColumnDefinitionHelper(ast: any, extendSchemas: SpannerExtendSchemaSources): string {
-        this.setScopedColumn(ast.column);
+    protected alterColumnDefinitionHelper(ast: any, columnName: string, extendSchemas: SpannerExtendSchemaSources): string {
+        this.setScopedColumn(columnName);
         return `${this.O_DATATYPE(ast.datatype, extendSchemas)} ` +
         `${this.O_COLUMN_DEFINITION(ast.columnDefinition, extendSchemas)}` +
         (ast.position ? (ast.position.after ? `AFTER ${ast.position.after}` : "FIRST") : "");
